@@ -26,16 +26,30 @@ button{cursor:pointer}
 ::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-thumb{background:rgba(0,0,0,0.15);border-radius:4px}
 #root{height:100vh}
 
+/* Tachograph responsive layout */
+.tacho-layout{display:flex;flex-direction:row}
+.tacho-sidebar{width:190px}
+.tacho-summary{width:270px}
+@media(max-width:768px){
+  .tacho-layout{flex-direction:column!important}
+  .tacho-sidebar{width:100%!important;border-right:none!important;border-bottom:1px solid rgba(0,0,0,0.12)!important;max-height:80px!important}
+  .tacho-sidebar>div:first-child{display:none!important}
+  .tacho-daylist{flex-direction:row!important;overflow-x:auto!important;overflow-y:hidden!important;flex:none!important;padding:6px 8px!important;gap:6px!important}
+  .tacho-daylist>div{flex-shrink:0!important;min-width:64px;text-align:center;padding:6px 8px!important;border-bottom:none!important;border-radius:8px!important}
+  .tacho-summary{display:none!important}
+}
+
 /* ── MOBILE ───────────────────────────────────────────────────────────── */
 @media(max-width:768px){
   aside{display:none!important}
   main{width:100%!important;flex:1}
   header{padding:8px 14px!important;min-height:48px}
-  .tm-content{padding:12px 10px!important;padding-bottom:72px!important;overflow-x:hidden}
+  .tm-content{padding:12px 10px!important;padding-bottom:16px!important;overflow-x:hidden}
 
   .tm-desktop-only{display:none!important}
-  .tm-mobile-bar{display:flex!important;flex-direction:column-reverse;}
-  .tm-bottom-nav{display:none!important}
+  .tm-mobile-bar{display:none!important}
+  .tm-mobile-only{display:flex!important}
+  .tm-mobile-menu{display:flex!important}
 
   /* ALL GRIDS → single column */
   div[style*="gridTemplateColumns"]{grid-template-columns:1fr!important}
@@ -3351,43 +3365,6 @@ const getWeekNum=d=>{const dt=new Date(d);const jan1=new Date(dt.getFullYear(),0
 const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
   const ACTS=[{id:'jazda',label:'🚛 Jazda',color:'#185FA5'},{id:'praca',label:'🔧 Inna praca',color:'#854F0B'},{id:'gotowość',label:'⏳ Gotowość',color:'#5B4FCA'},{id:'odpoczynek',label:'🛏 Odpoczynek',color:'#3B6D11'},{id:'przerwa',label:'☕ Przerwa',color:'#888'}];
   const emptyDay=()=>({id:gid(),date:'',segments:[{id:gid(),type:'jazda',from:'',to:'',notes:''}]});
-  // Smart time input — accepts "0800", "8:00", "8 00", auto-formats
-  const TimeInput=({value,onChange,label})=>{
-    const [raw,setRaw]=useState(value||'');
-    const [focused,setFocused]=useState(false);
-    useEffect(()=>{if(!focused)setRaw(value||'');},[value,focused]);
-    const parse=s=>{
-      if(!s)return'';
-      const clean=s.replace(/[^0-9]/g,'');
-      if(clean.length===3)return`0${clean[0]}:${clean.slice(1)}`;
-      if(clean.length===4)return`${clean.slice(0,2)}:${clean.slice(2)}`;
-      if(clean.length<=2)return clean.length===1?`0${clean}:00`:`${clean}:00`;
-      return s;
-    };
-    const commit=s=>{const v=parse(s);setRaw(v);onChange(v);};
-    const adj=m=>{const cur=toMin(value||'00:00');const next=((cur+m)+1440)%1440;const nv=fromMin(next);setRaw(nv);onChange(nv);};
-    return<div style={{display:'flex',flexDirection:'column',gap:2}}>
-      <label style={C.lbl}>{label}</label>
-      <div style={{display:'flex',gap:3,alignItems:'center'}}>
-        <button type="button" onClick={()=>adj(-15)} style={{...C.btn,padding:'4px 6px',fontSize:11,minWidth:28,fontWeight:600}}>-</button>
-        <input
-          style={{...C.inp,width:72,textAlign:'center',fontSize:15,fontWeight:600,letterSpacing:'0.05em'}}
-          value={focused?raw:(value||'')}
-          placeholder="08:00"
-          onFocus={()=>{setFocused(true);setRaw(value||'');}}
-          onChange={e=>setRaw(e.target.value)}
-          onBlur={e=>{setFocused(false);commit(e.target.value);}}
-          onKeyDown={e=>{
-            if(e.key==='Enter'||e.key===':')commit(raw);
-            if(e.key==='ArrowUp')adj(15);
-            if(e.key==='ArrowDown')adj(-15);
-          }}
-        />
-        <button type="button" onClick={()=>adj(15)} style={{...C.btn,padding:'4px 6px',fontSize:11,minWidth:28,fontWeight:600}}>+</button>
-      </div>
-    </div>;
-  };
-
   const [days,setDays]=useState(()=>{
     if(entries&&entries.length>0)return entries;
     return [{...emptyDay(),date:trip.start_date||today()}];
@@ -3421,39 +3398,11 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
     if(driveMin>=TACHO_RULES.minBreakAfter&&breakMin<TACHO_RULES.minBreak)violations.push({type:'warning',msg:`Brak wymaganej przerwy 45 min (przerwa: ${fromMin(breakMin)})`});
     const nextStart=lastEnd?addMinToTime(lastEnd,TACHO_RULES.minDailyRest):'';
     const nextStartReduced=lastEnd?addMinToTime(lastEnd,TACHO_RULES.minDailyRestReduced):'';
-    const driveLeft=Math.max(0,TACHO_RULES.maxDriveDay-driveMin);
-    const driveLeftExt=Math.max(0,TACHO_RULES.maxDriveDayExtended-driveMin);
-    return{driveMin,workMin,breakMin,restMin,violations,lastEnd,firstStart,nextStart,nextStartReduced,driveLeft,driveLeftExt};
+    return{driveMin,workMin,breakMin,restMin,violations,lastEnd,firstStart,nextStart,nextStartReduced,
+      driveLeft:Math.max(0,TACHO_RULES.maxDriveDay-driveMin),
+      driveLeftExt:Math.max(0,TACHO_RULES.maxDriveDayExtended-driveMin)};
   };
-
-  // Count reduced rests per week — detect gaps between consecutive days
-  const reducedRestsByWeek=()=>{
-    const sortedDays=[...days].filter(d=>d.date).sort((a,b)=>a.date.localeCompare(b.date));
-    const startDate2=sortedDays[0]?.date||today();
-    const startMs2=new Date(startDate2).getTime();
-    const result={};
-    for(let i=1;i<sortedDays.length;i++){
-      const prev=sortedDays[i-1];const cur2=sortedDays[i];
-      const prevStats=dayStats(prev);const curStats=dayStats(cur2);
-      if(!prevStats.lastEnd||!curStats.firstStart)continue;
-      // Rest between prev day's last end and cur day's first start
-      // If next day, add 24h offset for prev end time
-      const prevEndMin=toMin(prevStats.lastEnd);
-      const curStartMin=toMin(curStats.firstStart)+1440; // next day
-      const restGap=curStartMin-prevEndMin;
-      if(restGap>=TACHO_RULES.minDailyRestReduced&&restGap<TACHO_RULES.minDailyRest){
-        // This is a reduced rest
-        const dayNum=Math.floor((new Date(cur2.date).getTime()-startMs2)/86400000)+1;
-        const weekNum=Math.ceil(dayNum/7);
-        const wKey=`Tydzień ${weekNum}`;
-        result[wKey]=(result[wKey]||0)+1;
-      }
-    }
-    return result;
-  };
-  const reducedRests=reducedRestsByWeek();
-  const weeks=()=>{
-    // Trip-relative weeks: day 1-7 = week 1, day 8-14 = week 2, etc.
+  const weekStats=()=>{
     const startDate=days.find(d=>d.date)?.date||today();
     const startMs=new Date(startDate).getTime();
     const byWeek={};
@@ -3467,31 +3416,67 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
     });
     return Object.values(byWeek).sort((a,b)=>a.weekNum-b.weekNum);
   };
-  const allWeeks=weeks();
+  const reducedRestsByWeek=()=>{
+    const sorted=[...days].filter(d=>d.date).sort((a,b)=>a.date.localeCompare(b.date));
+    const startDate=sorted[0]?.date||today();
+    const startMs=new Date(startDate).getTime();
+    const result={};
+    for(let i=1;i<sorted.length;i++){
+      const prev=sorted[i-1];const cur=sorted[i];
+      const ps=dayStats(prev);const cs=dayStats(cur);
+      if(!ps.lastEnd||!cs.firstStart)continue;
+      const gap=toMin(cs.firstStart)+1440-toMin(ps.lastEnd);
+      if(gap>=TACHO_RULES.minDailyRestReduced&&gap<TACHO_RULES.minDailyRest){
+        const dayNum=Math.floor((new Date(cur.date).getTime()-startMs)/86400000)+1;
+        const wKey=`Tydzień ${Math.ceil(dayNum/7)}`;
+        result[wKey]=(result[wKey]||0)+1;
+      }
+    }
+    return result;
+  };
+  const allWeeks=weekStats();
   const curDay=days[selDay]||days[0];
-  // Current week relative to trip start
   const startDate=days.find(d=>d.date)?.date||today();
   const startMs=new Date(startDate).getTime();
   const curDayNum=curDay?.date?Math.floor((new Date(curDay.date).getTime()-startMs)/86400000)+1:1;
   const curWeekNum=Math.ceil(curDayNum/7);
   const curWeekKey=`Tydzień ${curWeekNum}`;
-  const curW=allWeeks.find(w=>w.week===curWeekKey)||{week:curWeekKey,weekNum:curWeekNum,drive:0,work:0,days:0};
-  // Rolling 2-week: current + previous (overlapping pairs — W1+W2, W2+W3, etc.)
-  const prevW=allWeeks.find(w=>w.weekNum===curWeekNum-1)||{drive:0,weekNum:curWeekNum-1};
+  const curW=allWeeks.find(w=>w.week===curWeekKey)||{drive:0,work:0,days:0};
+  const prevW=allWeeks.find(w=>w.weekNum===curWeekNum-1)||{drive:0};
   const totalDrive=curW.drive+(curWeekNum>1?prevW.drive:0);
-  const lastW=curW;
-  // All rolling 2-week pairs for violation display
   const twoWeekViolations=allWeeks.map((w,i)=>{
     if(i===0)return null;
     const prev=allWeeks[i-1];
     const sum=w.drive+prev.drive;
     return sum>TACHO_RULES.maxDriveTwoWeeks?{label:`${prev.week} + ${w.week}`,sum}:null;
   }).filter(Boolean);
+  const reducedRests=reducedRestsByWeek();
   const cur=curDay?dayStats(curDay):{driveMin:0,workMin:0,breakMin:0,violations:[],nextStart:'',nextStartReduced:'',driveLeft:TACHO_RULES.maxDriveDay,driveLeftExt:TACHO_RULES.maxDriveDayExtended};
   const typeColor=t=>ACTS.find(a=>a.id===t)?.color||'#888';
   const Bar=({val,max,col,h=5})=><div style={{height:h,background:'#e0dfd8',borderRadius:h/2,overflow:'hidden'}}><div style={{height:'100%',width:`${Math.min(100,Math.round(val/max*100))}%`,background:col,borderRadius:h/2}}/></div>;
-  const mobile=window.innerWidth<=768;
+
+  // Smart time input component
+  const TimeInput=({value,onChange,label})=>{
+    const [raw,setRaw]=useState(value||'');const [focused,setFocused]=useState(false);
+    useEffect(()=>{if(!focused)setRaw(value||'');},[value,focused]);
+    const parse=s=>{if(!s)return'';const clean=s.replace(/[^0-9]/g,'');if(clean.length===3)return`0${clean[0]}:${clean.slice(1)}`;if(clean.length===4)return`${clean.slice(0,2)}:${clean.slice(2)}`;if(clean.length<=2)return clean.length===1?`0${clean}:00`:`${clean}:00`;return s;};
+    const commit=s=>{const v=parse(s);setRaw(v);onChange(v);};
+    const adj=m=>{const cur=toMin(value||'00:00');const next=((cur+m)+1440)%1440;const nv=fromMin(next);setRaw(nv);onChange(nv);};
+    return<div style={{display:'flex',flexDirection:'column',gap:2}}>
+      <label style={C.lbl}>{label}</label>
+      <div style={{display:'flex',gap:3,alignItems:'center'}}>
+        <button type="button" onClick={()=>adj(-15)} style={{...C.btn,padding:'4px 6px',fontSize:11,minWidth:28,fontWeight:600}}>-</button>
+        <input style={{...C.inp,width:72,textAlign:'center',fontSize:15,fontWeight:600,letterSpacing:'0.05em'}} value={focused?raw:(value||'')} placeholder="08:00"
+          onFocus={()=>{setFocused(true);setRaw(value||'');}} onChange={e=>setRaw(e.target.value)}
+          onBlur={e=>{setFocused(false);commit(e.target.value);}}
+          onKeyDown={e=>{if(e.key==='Enter'||e.key===':')commit(raw);if(e.key==='ArrowUp')adj(15);if(e.key==='ArrowDown')adj(-15);}}/>
+        <button type="button" onClick={()=>adj(15)} style={{...C.btn,padding:'4px 6px',fontSize:11,minWidth:28,fontWeight:600}}>+</button>
+      </div>
+    </div>;
+  };
+
   return(<div style={{position:'fixed',inset:0,background:'#f5f4f0',zIndex:20000,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+    {/* Topbar */}
     <div style={{background:'#1a1a18',color:'#fff',padding:'10px 18px',display:'flex',alignItems:'center',gap:12,flexShrink:0}}>
       <button style={{...C.btn,background:'transparent',color:'#fff',border:'0.5px solid rgba(255,255,255,0.3)',padding:'4px 10px'}} onClick={onClose}><i className="ti ti-arrow-left"/> Wróć</button>
       <div style={{flex:1}}>
@@ -3500,18 +3485,21 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
       </div>
       <button style={{...C.btnP,background:'#3B6D11',border:'none',padding:'6px 14px'}} onClick={()=>{setEntries(days);onSave(days);}}><i className="ti ti-device-floppy"/> Zapisz</button>
     </div>
-    <div style={{flex:1,display:'flex',overflow:'hidden',flexDirection:mobile?'column':'row'}}>
-      {/* Day list — horizontal tabs on mobile, vertical sidebar on desktop */}
-      {!mobile&&<div style={{width:190,background:'#fff',borderRight:'0.5px solid rgba(0,0,0,0.1)',display:'flex',flexDirection:'column',flexShrink:0}}>
+
+    {/* Main layout — 3 columns on desktop, stacked on mobile via CSS */}
+    <div style={{flex:1,display:'flex',overflow:'hidden'}} className="tacho-layout">
+
+      {/* Day list sidebar */}
+      <div className="tacho-sidebar" style={{background:'#fff',borderRight:'0.5px solid rgba(0,0,0,0.1)',display:'flex',flexDirection:'column',flexShrink:0}}>
         <div style={{padding:'8px 10px',borderBottom:'0.5px solid rgba(0,0,0,0.08)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div style={{fontSize:10,fontWeight:500,color:'#888'}}>DNI ({days.length})</div>
           <button style={{...C.btnP,padding:'2px 8px',fontSize:11}} onClick={addDay}><i className="ti ti-plus"/></button>
         </div>
-        <div style={{overflowY:'auto',flex:1}}>
+        <div style={{overflowY:'auto',flex:1,display:'flex',flexDirection:'column'}} className="tacho-daylist">
           {days.map((d,i)=>{
             const s=dayStats(d);const hasDanger=s.violations.some(v=>v.type==='danger');const hasWarn=s.violations.some(v=>v.type==='warning');
-            return<div key={d.id} onClick={()=>setSelDay(i)} style={{padding:'9px 10px',borderBottom:'0.5px solid rgba(0,0,0,0.06)',cursor:'pointer',background:selDay===i?'#1a1a18':hasDanger?'#FCEBEB':hasWarn?'#FAEEDA':'#fff',color:selDay===i?'#fff':'#1a1a18'}}>
-              <div style={{fontSize:12,fontWeight:600}}>{d.date||'Brak daty'}</div>
+            return<div key={d.id} onClick={()=>setSelDay(i)} style={{padding:'9px 10px',borderBottom:'0.5px solid rgba(0,0,0,0.06)',cursor:'pointer',background:selDay===i?'#1a1a18':hasDanger?'#FCEBEB':hasWarn?'#FAEEDA':'#fff',color:selDay===i?'#fff':'#1a1a18',flexShrink:0}}>
+              <div style={{fontSize:12,fontWeight:600}}>{d.date||'–'}</div>
               <div style={{fontSize:9,color:selDay===i?'rgba(255,255,255,0.6)':'#888',marginTop:1}}>
                 {d.date&&['Nd','Pn','Wt','Śr','Cz','Pt','So'][new Date(d.date).getDay()]}
                 {s.driveMin>0&&` · ${fromMin(s.driveMin)}`}
@@ -3520,147 +3508,86 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
             </div>;
           })}
         </div>
-      </div>}
-      {mobile&&<div style={{background:'#fff',borderBottom:'1px solid rgba(0,0,0,0.1)',overflowX:'auto',display:'flex',flexShrink:0,padding:'6px 8px',gap:6}}>
-        {days.map((d,i)=>{
-          const s=dayStats(d);const hasDanger=s.violations.some(v=>v.type==='danger');const hasWarn=s.violations.some(v=>v.type==='warning');
-          return<button key={d.id} onClick={()=>setSelDay(i)} style={{flexShrink:0,padding:'6px 10px',borderRadius:8,border:'none',cursor:'pointer',background:selDay===i?'#1a1a18':hasDanger?'#FCEBEB':hasWarn?'#FAEEDA':'#f5f4f0',color:selDay===i?'#fff':'#1a1a18',fontSize:12,fontWeight:selDay===i?600:400,minWidth:64,textAlign:'center'}}>
-            <div>{d.date?d.date.slice(5):'-'}</div>
-            <div style={{fontSize:9,color:selDay===i?'rgba(255,255,255,0.6)':'#888'}}>{d.date&&['Nd','Pn','Wt','Śr','Cz','Pt','So'][new Date(d.date).getDay()]}</div>
-            {hasDanger&&<div style={{fontSize:9,color:selDay===i?'#FFD700':'#A32D2D'}}>⚠</div>}
-          </button>;
-        })}
-        <button onClick={addDay} style={{flexShrink:0,padding:'6px 12px',borderRadius:8,border:'2px dashed #ccc',background:'transparent',cursor:'pointer',color:'#888',fontSize:18}}>+</button>
-      </div>}
+      </div>
+
       {/* Day detail */}
       <div style={{flex:1,overflowY:'auto',padding:'14px 18px'}}>
-        {curDay&&<>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
-              <input style={{...C.inp,width:160,fontSize:14,fontWeight:600}} type="date" value={curDay.date||''} onChange={e=>upDay(selDay,'date',e.target.value)}/>
-              <span style={{fontSize:12,color:'#888'}}>{curDay.date&&['Niedziela','Poniedziałek','Wtorek','Środa','Czwartek','Piątek','Sobota'][new Date(curDay.date).getDay()]}</span>
-            </div>
-            <div style={{display:'flex',gap:6}}>
-              {days.length>1&&<button style={{...C.btn,color:'#A32D2D'}} onClick={()=>{setDays(p=>p.filter((_,j)=>j!==selDay));setSelDay(Math.max(0,selDay-1));}}><i className="ti ti-trash"/> Usuń dzień</button>}
-              <button style={C.btnP} onClick={()=>addSeg(selDay)}><i className="ti ti-plus"/> Dodaj segment</button>
-            </div>
+        {curDay&&<><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <input style={{...C.inp,width:160,fontSize:14,fontWeight:600}} type="date" value={curDay.date||''} onChange={e=>upDay(selDay,'date',e.target.value)}/>
+            <span style={{fontSize:12,color:'#888'}}>{curDay.date&&['Niedziela','Poniedziałek','Wtorek','Środa','Czwartek','Piątek','Sobota'][new Date(curDay.date).getDay()]}</span>
           </div>
-          <div style={{display:'flex',flexDirection:'column',gap:7,marginBottom:14}}>
-            {(curDay.segments||[]).map((seg,si)=>(
-              <div key={seg.id} style={{background:'#fff',borderRadius:9,padding:'8px 12px',border:`2px solid ${typeColor(seg.type)}33`,display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>
-                <div><label style={C.lbl}>Aktywność</label>
-                <div style={{display:'flex',gap:4}}>
-                  {ACTS.map(a=><button key={a.id} type="button" onClick={()=>upSeg(selDay,si,'type',a.id)} title={a.label} style={{
-                    width:36,height:36,borderRadius:7,border:`2px solid ${seg.type===a.id?a.color:'#e0dfd8'}`,
-                    background:seg.type===a.id?a.color:'#f5f4f0',cursor:'pointer',fontSize:15,
-                    display:'flex',alignItems:'center',justifyContent:'center',
-                    transition:'all 0.1s',flexShrink:0,
-                  }}>{a.label.split(' ')[0]}</button>)}
-                </div></div>
-                <TimeInput label="Od" value={seg.from||''} onChange={v=>upSeg(selDay,si,'from',v)}/>
-                <span style={{color:'#aaa',marginBottom:10,fontSize:18}}>→</span>
-                <TimeInput label="Do" value={seg.to||''} onChange={v=>upSeg(selDay,si,'to',v)}/>
-                {seg.from&&seg.to&&<div style={{marginBottom:4}}><label style={C.lbl}>Czas</label><div style={{...bdg(seg.type==='jazda'?'blue':seg.type==='odpoczynek'?'green':'gray'),fontSize:13,fontWeight:700,padding:'4px 10px'}}>{fromMin(Math.max(0,toMin(seg.to)-toMin(seg.from)))}</div></div>}
-                <div style={{flex:1,minWidth:100}}><label style={C.lbl}>Notatka</label><input style={C.inp} value={seg.notes||''} onChange={e=>upSeg(selDay,si,'notes',e.target.value)} placeholder="trasa, miejsce..."/></div>
-                <button style={{...C.btn,padding:'4px 6px',marginBottom:2}} onClick={()=>delSeg(selDay,si)}><i className="ti ti-x"/></button>
-              </div>
-            ))}
-            {(curDay.segments||[]).length===0&&<div style={{textAlign:'center',padding:20,color:'#aaa',fontSize:11}}>Kliknij "+ Dodaj segment" aby wpisać aktywności.</div>}
+          <div style={{display:'flex',gap:6}}>
+            {days.length>1&&<button style={{...C.btn,color:'#A32D2D'}} onClick={()=>{setDays(p=>p.filter((_,j)=>j!==selDay));setSelDay(Math.max(0,selDay-1));}}><i className="ti ti-trash"/> Usuń dzień</button>}
+            <button style={C.btnP} onClick={()=>addSeg(selDay)}><i className="ti ti-plus"/> Dodaj segment</button>
           </div>
-          {cur.violations.map((v,i)=><div key={i} style={{padding:'7px 12px',borderRadius:7,marginBottom:6,fontSize:11,background:v.type==='danger'?'#FCEBEB':'#FAEEDA',color:v.type==='danger'?'#A32D2D':'#854F0B',display:'flex',gap:6}}><i className="ti ti-alert-triangle"/>{v.msg}</div>)}
-          {cur.lastEnd&&<div style={{background:'#EAF3DE',border:'0.5px solid #9FCB6A',borderRadius:9,padding:'10px 14px',marginTop:4}}>
-            <div style={{fontSize:11,fontWeight:600,color:'#3B6D11',marginBottom:8}}><i className="ti ti-clock-check" style={{marginRight:5}}/>Następny dzień — od kiedy może prowadzić?</div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,fontSize:11}}>
-              <div style={{background:'rgba(255,255,255,0.7)',borderRadius:6,padding:'7px 10px'}}><div style={{fontSize:9,color:'#888',marginBottom:2}}>Koniec dziś</div><div style={{fontWeight:700,fontSize:15}}>{cur.lastEnd}</div></div>
-              <div style={{background:'rgba(255,255,255,0.7)',borderRadius:6,padding:'7px 10px'}}><div style={{fontSize:9,color:'#888',marginBottom:2}}>Min. start jutro (11h odpoczynku)</div><div style={{fontWeight:700,fontSize:15,color:'#3B6D11'}}>{cur.nextStart}</div></div>
-              <div style={{background:'rgba(255,255,255,0.9)',borderRadius:6,padding:'7px 10px'}}>
-                <div style={{fontSize:9,color:'#888',marginBottom:2}}>Skr. odp. 9h — start jutro</div>
-                <div style={{fontWeight:700,fontSize:15,color:(reducedRests[curWeekKey]||0)>=3?'#A32D2D':'#854F0B'}}>
-                  {(reducedRests[curWeekKey]||0)>=3?'Niedostępny':cur.nextStartReduced}
-                </div>
-              </div>
-              <div style={{background:'rgba(255,255,255,0.9)',borderRadius:6,padding:'7px 10px'}}>
-                <div style={{fontSize:9,color:'#888',marginBottom:2}}>Skrócone odpoczynki (max 3/tydzień)</div>
-                <div style={{fontWeight:700,fontSize:15,color:(reducedRests[curWeekKey]||0)>=3?'#A32D2D':(reducedRests[curWeekKey]||0)>=2?'#854F0B':'#3B6D11'}}>
-                  {reducedRests[curWeekKey]||0} / 3{(reducedRests[curWeekKey]||0)>=3?' ⚠':(reducedRests[curWeekKey]||0)===2?' ⚡':''}
-                </div>
-              </div>
-              <div style={{background:'rgba(255,255,255,0.7)',borderRadius:6,padding:'7px 10px'}}><div style={{fontSize:9,color:'#888',marginBottom:2}}>Jazda dziś pozostało</div><div style={{fontWeight:700,fontSize:15,color:cur.driveMin>TACHO_RULES.maxDriveDay?'#A32D2D':'#185FA5'}}>{fromMin(cur.driveMin>TACHO_RULES.maxDriveDay?cur.driveLeftExt:cur.driveLeft)}</div></div>
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:7,marginBottom:14}}>
+          {(curDay.segments||[]).map((seg,si)=>(
+            <div key={seg.id} style={{background:'#fff',borderRadius:9,padding:'8px 12px',border:`2px solid ${typeColor(seg.type)}33`,display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>
+              <div><label style={C.lbl}>Aktywność</label>
+              <div style={{display:'flex',gap:4}}>
+                {ACTS.map(a=><button key={a.id} type="button" onClick={()=>upSeg(selDay,si,'type',a.id)} title={a.label} style={{width:36,height:36,borderRadius:7,border:`2px solid ${seg.type===a.id?a.color:'#e0dfd8'}`,background:seg.type===a.id?a.color:'#f5f4f0',cursor:'pointer',fontSize:15,display:'flex',alignItems:'center',justifyContent:'center'}}>{a.label.split(' ')[0]}</button>)}
+              </div></div>
+              <TimeInput label="Od" value={seg.from||''} onChange={v=>upSeg(selDay,si,'from',v)}/>
+              <span style={{color:'#aaa',marginBottom:10,fontSize:18}}>→</span>
+              <TimeInput label="Do" value={seg.to||''} onChange={v=>upSeg(selDay,si,'to',v)}/>
+              {seg.from&&seg.to&&<div style={{marginBottom:4}}><label style={C.lbl}>Czas</label><div style={{...bdg(seg.type==='jazda'?'blue':seg.type==='odpoczynek'?'green':'gray'),fontSize:13,fontWeight:700,padding:'4px 10px'}}>{fromMin(Math.max(0,toMin(seg.to)-toMin(seg.from)))}</div></div>}
+              <div style={{flex:1,minWidth:100}}><label style={C.lbl}>Notatka</label><input style={C.inp} value={seg.notes||''} onChange={e=>upSeg(selDay,si,'notes',e.target.value)} placeholder="trasa, miejsce..."/></div>
+              <button style={{...C.btn,padding:'4px 6px',marginBottom:2}} onClick={()=>delSeg(selDay,si)}><i className="ti ti-x"/></button>
             </div>
-          </div>}
-        </>}
+          ))}
+          {(curDay.segments||[]).length===0&&<div style={{textAlign:'center',padding:20,color:'#aaa',fontSize:11}}>Kliknij "+ Dodaj segment"</div>}
+        </div>
+        {cur.violations.map((v,i)=><div key={i} style={{padding:'7px 12px',borderRadius:7,marginBottom:6,fontSize:11,background:v.type==='danger'?'#FCEBEB':'#FAEEDA',color:v.type==='danger'?'#A32D2D':'#854F0B',display:'flex',gap:6}}><i className="ti ti-alert-triangle"/>{v.msg}</div>)}
+        {cur.lastEnd&&<div style={{background:'#EAF3DE',border:'0.5px solid #9FCB6A',borderRadius:9,padding:'10px 14px',marginTop:4}}>
+          <div style={{fontSize:11,fontWeight:600,color:'#3B6D11',marginBottom:8}}><i className="ti ti-clock-check" style={{marginRight:5}}/>Następny dzień — od kiedy może prowadzić?</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,fontSize:11}}>
+            <div style={{background:'rgba(255,255,255,0.7)',borderRadius:6,padding:'7px 10px'}}><div style={{fontSize:9,color:'#888',marginBottom:2}}>Koniec dziś</div><div style={{fontWeight:700,fontSize:15}}>{cur.lastEnd}</div></div>
+            <div style={{background:'rgba(255,255,255,0.7)',borderRadius:6,padding:'7px 10px'}}><div style={{fontSize:9,color:'#888',marginBottom:2}}>Min. start jutro (11h)</div><div style={{fontWeight:700,fontSize:15,color:'#3B6D11'}}>{cur.nextStart}</div></div>
+            <div style={{background:'rgba(255,255,255,0.9)',borderRadius:6,padding:'7px 10px'}}><div style={{fontSize:9,color:'#888',marginBottom:2}}>Skr. odp. 9h — start jutro</div><div style={{fontWeight:700,fontSize:15,color:(reducedRests[curWeekKey]||0)>=3?'#A32D2D':'#854F0B'}}>{(reducedRests[curWeekKey]||0)>=3?'Niedostępny':cur.nextStartReduced}</div></div>
+            <div style={{background:'rgba(255,255,255,0.9)',borderRadius:6,padding:'7px 10px'}}><div style={{fontSize:9,color:'#888',marginBottom:2}}>Skr. odpoczynki (max 3/tydz.)</div><div style={{fontWeight:700,fontSize:15,color:(reducedRests[curWeekKey]||0)>=3?'#A32D2D':(reducedRests[curWeekKey]||0)>=2?'#854F0B':'#3B6D11'}}>{reducedRests[curWeekKey]||0} / 3{(reducedRests[curWeekKey]||0)>=3?' ⚠':''}</div></div>
+            <div style={{background:'rgba(255,255,255,0.7)',borderRadius:6,padding:'7px 10px'}}><div style={{fontSize:9,color:'#888',marginBottom:2}}>Jazda dziś pozostało</div><div style={{fontWeight:700,fontSize:15,color:cur.driveMin>TACHO_RULES.maxDriveDay?'#A32D2D':'#185FA5'}}>{fromMin(cur.driveMin>TACHO_RULES.maxDriveDay?cur.driveLeftExt:cur.driveLeft)}</div></div>
+          </div>
+        </div>}</>}
       </div>
-      {/* Summary panel — desktop only */}
-      {!mobile&&<div style={{width:270,background:'#fff',borderLeft:'0.5px solid rgba(0,0,0,0.1)',overflowY:'auto',padding:'14px',flexShrink:0}}>
+
+      {/* Summary panel */}
+      <div className="tacho-summary" style={{width:270,background:'#fff',borderLeft:'0.5px solid rgba(0,0,0,0.1)',overflowY:'auto',padding:'14px',flexShrink:0}}>
         <div style={{fontSize:11,fontWeight:600,color:'#888',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10}}>Statystyki</div>
-        {[{label:`Jazda tygodniowa (${curWeekKey})`,val:lastW?.drive||0,max:TACHO_RULES.maxDriveWeek},{label:`Jazda 2 tygodnie (${curWeekNum>1?`T${curWeekNum-1}+T${curWeekNum}`:`T${curWeekNum}`})`,val:totalDrive,max:TACHO_RULES.maxDriveTwoWeeks}].map(({label,val,max})=>{
+        {[{label:`Jazda tygodniowa (${curWeekKey})`,val:curW.drive,max:TACHO_RULES.maxDriveWeek},{label:`Jazda 2 tygodnie (T${curWeekNum>1?curWeekNum-1+'+'+'T'+'':''}${curWeekNum})`,val:totalDrive,max:TACHO_RULES.maxDriveTwoWeeks}].map(({label,val,max})=>{
           const pct=Math.min(100,Math.round(val/max*100));const col=pct>95?'#A32D2D':pct>80?'#854F0B':'#3B6D11';
           return<div key={label} style={{marginBottom:12,background:'#f5f4f0',borderRadius:8,padding:'9px 11px'}}>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:11,marginBottom:4}}><span style={{fontWeight:500}}>{label}</span><span style={{color:col,fontWeight:600}}>{pct}%</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:11,marginBottom:4}}><span style={{fontWeight:500,fontSize:10}}>{label}</span><span style={{color:col,fontWeight:600}}>{pct}%</span></div>
             <Bar val={val} max={max} col={col}/>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'#888',marginTop:4}}>
-              <span>Użyto: <b>{fromMin(val)}</b></span><span>Zostało: <b style={{color:col}}>{fromMin(Math.max(0,max-val))}</b></span>
-            </div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'#888',marginTop:4}}><span>Użyto: <b>{fromMin(val)}</b></span><span>Zostało: <b style={{color:col}}>{fromMin(Math.max(0,max-val))}</b></span></div>
           </div>;
         })}
-        {twoWeekViolations.length>0&&<div style={{marginBottom:10}}>
-          {twoWeekViolations.map((v,i)=><div key={i} style={{padding:'5px 9px',borderRadius:6,background:'#FCEBEB',color:'#A32D2D',fontSize:10,marginBottom:4}}>
-            ⚠ {v.label}: {fromMin(v.sum)} &gt; 90h
-          </div>)}
-        </div>}
-        <div style={{fontSize:11,fontWeight:600,color:'#888',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8}}>Tygodniowo (z parami 2-tydz.)</div>
+        {twoWeekViolations.length>0&&twoWeekViolations.map((v,i)=><div key={i} style={{padding:'5px 9px',borderRadius:6,background:'#FCEBEB',color:'#A32D2D',fontSize:10,marginBottom:4}}>⚠ {v.label}: {fromMin(v.sum)} &gt; 90h</div>)}
+        <div style={{fontSize:11,fontWeight:600,color:'#888',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8,marginTop:4}}>Tygodniowo</div>
         {allWeeks.map((w,i)=>{
           const pct=Math.min(100,Math.round(w.drive/TACHO_RULES.maxDriveWeek*100));const col=pct>95?'#A32D2D':pct>80?'#854F0B':'#3B6D11';
-          const prev=allWeeks[i-1];
-          const twoWkSum=prev?w.drive+prev.drive:null;
-          const twoWkOver=twoWkSum&&twoWkSum>TACHO_RULES.maxDriveTwoWeeks;
-          const reducedCount=reducedRests[w.week]||0;
-          const reducedOver=reducedCount>3;
+          const prev=allWeeks[i-1];const twoWkSum=prev?w.drive+prev.drive:null;const twoWkOver=twoWkSum&&twoWkSum>TACHO_RULES.maxDriveTwoWeeks;
+          const rc=reducedRests[w.week]||0;
           return<div key={w.week} style={{marginBottom:8,paddingBottom:8,borderBottom:'0.5px solid rgba(0,0,0,0.07)',background:w.week===curWeekKey?'#f0f8ff':'',borderRadius:4,padding:'4px 6px'}}>
             <div style={{display:'flex',justifyContent:'space-between',fontSize:11}}><span style={{fontWeight:w.week===curWeekKey?700:500}}>{w.week}</span><span style={{color:col,fontWeight:600}}>{fromMin(w.drive)}</span></div>
             <Bar val={w.drive} max={TACHO_RULES.maxDriveWeek} col={col} h={4}/>
-            <div style={{fontSize:9,color:'#888',marginTop:3}}>Praca: {fromMin(w.work)} · {w.days} dni · Zostało: {fromMin(Math.max(0,TACHO_RULES.maxDriveWeek-w.drive))}</div>
-            <div style={{display:'flex',gap:6,marginTop:3,flexWrap:'wrap'}}>
-              <span style={{fontSize:9,color:reducedOver?'#A32D2D':'#888',fontWeight:reducedOver?600:400}}>
-                {reducedOver?'⚠ ':''} Skr. odpoczynki: <b style={{color:reducedOver?'#A32D2D':reducedCount>=3?'#854F0B':'#3B6D11'}}>{reducedCount}/3</b>
-                {reducedOver?' — PRZEKROCZENIE (max 3/tydz.)':reducedCount===3?' — limit osiągnięty':` — zostało ${3-reducedCount}`}
-              </span>
-            </div>
-            {twoWkSum!==null&&<div style={{fontSize:9,marginTop:2,color:twoWkOver?'#A32D2D':'#888',fontWeight:twoWkOver?600:400}}>
-              {twoWkOver?'⚠ ':''}Suma z poprz.: {fromMin(twoWkSum)} / 90h {twoWkOver?'— PRZEKROCZENIE':''}
-            </div>}
+            <div style={{fontSize:9,color:'#888',marginTop:3}}>Praca: {fromMin(w.work)} · Zostało: {fromMin(Math.max(0,TACHO_RULES.maxDriveWeek-w.drive))}</div>
+            <div style={{fontSize:9,marginTop:2,color:rc>=3?'#A32D2D':rc>=2?'#854F0B':'#888'}}>Skr.odp.: {rc}/3{rc>=3?' ⚠ LIMIT!':rc===2?' ⚡':''}</div>
+            {twoWkSum!==null&&<div style={{fontSize:9,marginTop:1,color:twoWkOver?'#A32D2D':'#888',fontWeight:twoWkOver?600:400}}>{twoWkOver?'⚠ ':''}Suma z poprz.: {fromMin(twoWkSum)}/90h</div>}
           </div>;
         })}
-        {curDay&&cur.driveMin>0&&<>
-          <div style={{fontSize:11,fontWeight:600,color:'#888',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8,marginTop:8}}>Dziś</div>
-          {[['Jazda',cur.driveMin,TACHO_RULES.maxDriveDay,'#185FA5'],['Praca',cur.workMin,13*60,'#854F0B'],['Przerwa',cur.breakMin,TACHO_RULES.minBreak,'#3B6D11']].map(([l,v,max,col])=><div key={l} style={{marginBottom:7}}>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:10,marginBottom:2}}><span>{l}</span><span style={{color:col,fontWeight:600}}>{fromMin(v)} / {fromMin(max)}</span></div>
-            <Bar val={v} max={max} col={col} h={4}/>
-          </div>)}
-        </>}
-        <div style={{marginTop:14,padding:'9px 11px',background:'#E6F1FB',borderRadius:8,fontSize:10,color:'#185FA5'}}>
+        {allWeeks.length===0&&<div style={{fontSize:11,color:'#aaa',textAlign:'center',padding:16}}>Uzupełnij daty.</div>}
+        <div style={{marginTop:10,padding:'9px 11px',background:'#E6F1FB',borderRadius:8,fontSize:10,color:'#185FA5'}}>
           <div style={{fontWeight:600,marginBottom:4}}>📋 Limity WE 561/2006</div>
-          {[['Max jazda/dobę','9h (ext. 10h)'],['Max jazda/tydzień','56h'],['Max jazda/2 tygodnie','90h'],['Przerwa po 4,5h jazdy','45 min (lub 15+30)'],['Min. odpoczynek dzienny','11h (skr. 9h)'],['Min. odpoczynek tyg.','45h (skr. 24h)']].map(([l,v])=><div key={l} style={{display:'flex',justifyContent:'space-between',marginBottom:2}}><span style={{color:'#888'}}>{l}</span><span style={{fontWeight:500}}>{v}</span></div>)}
+          {[['Max jazda/dobę','9h (ext. 10h)'],['Max jazda/tydzień','56h'],['Max jazda/2 tyg.','90h'],['Przerwa po 4,5h','45 min'],['Min. odp. dzienny','11h (skr. 9h)']].map(([l,v])=><div key={l} style={{display:'flex',justifyContent:'space-between',marginBottom:2}}><span style={{color:'#888'}}>{l}</span><span style={{fontWeight:500}}>{v}</span></div>)}
         </div>
       </div>
     </div>
-    {mobile&&cur.driveMin>0&&<div style={{background:'#fff',borderBottom:'1px solid rgba(0,0,0,0.08)',padding:'8px 12px',display:'flex',gap:10,overflowX:'auto',flexShrink:0,order:-1}}>
-      {[
-        {l:'Jazda',v:fromMin(cur.driveMin),c:cur.driveMin>TACHO_RULES.maxDriveDayExtended?'#A32D2D':cur.driveMin>TACHO_RULES.maxDriveDay?'#854F0B':'#185FA5'},
-        {l:'Pozostało',v:fromMin(cur.driveMin>TACHO_RULES.maxDriveDay?cur.driveLeftExt:cur.driveLeft),c:'#3B6D11'},
-        {l:'Przerwa',v:fromMin(cur.breakMin),c:cur.breakMin<TACHO_RULES.minBreak&&cur.driveMin>=TACHO_RULES.minBreakAfter?'#A32D2D':'#888'},
-        {l:'W tygodniu',v:fromMin(lastW?.drive||0),c:(lastW?.drive||0)>TACHO_RULES.maxDriveWeek?'#A32D2D':'#854F0B'},
-        {l:'Skr.odp.',v:`${reducedRests[curWeekKey]||0}/3`,c:(reducedRests[curWeekKey]||0)>=3?'#A32D2D':'#888'},
-      ].map(({l,v,c})=><div key={l} style={{flexShrink:0,textAlign:'center',minWidth:64}}>
-        <div style={{fontSize:9,color:'#888',marginBottom:1}}>{l}</div>
-        <div style={{fontSize:14,fontWeight:700,color:c}}>{v}</div>
-      </div>)}
-    </div>}
   </div>);
 };
 
-const DEFAULT_EQUIP=['Gaśnica','Kamizelka odblaskowa','Trójkąt ostrzegawczy','Apteczka','Kluczyki zapasowe','Karta drogowa','CMR','Pasy mocujące','Tachograf (karta)','Dokumenty pojazdu','Prawo jazdy','Dowód ubezp.'];
-const DEFAULT_TECH_ITEMS=['Klocki hamulcowe','Opony (zużycie)','Olej silnikowy','Olej przekładniowy','Szyby / lusterka','Plandeka / zabudowa','Oświetlenie','Akumulator','Filtry (pow./paliwa)','Poziom płynów','Układ kierowniczy','Zawieszenie'];
+
 const Trips=({db})=>{
   const [trips,setTrips]=db.trips;const [drivers]=db.drivers;const [vehicles]=db.vehicles;const [fines]=db.fines;
   const [modal,setModal]=useState(false);const [editTab,setEditTab]=useState('finanse');const [detail,setDetail]=useState(null);const [detailTab,setDetailTab]=useState('finanse');
@@ -5283,70 +5210,46 @@ function App(){
       </div>
     </aside>
 
-    {/* Hamburger menu — mobile only */}
-    {isMobileMenuOpen&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:1001}} onClick={()=>setMobileMenuOpen(false)}/>}
-    <div style={{position:'fixed',bottom:0,left:0,right:0,zIndex:1002,display:'none'}} className="tm-mobile-bar">
-      {/* Bottom bar with hamburger */}
-      <div style={{background:'#fff',borderTop:'1px solid rgba(0,0,0,0.12)',height:60,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px'}}>
-        <div style={{fontSize:13,fontWeight:600,color:'#1a1a18'}}>{visibleMods.find(m=>m.id===active)?.label||''}</div>
-        <div style={{display:'flex',alignItems:'center',gap:8}}>
-          <button onClick={()=>window.location.reload()} style={{background:'none',border:'none',cursor:'pointer',padding:'8px',color:'#888',display:'flex',alignItems:'center',justifyContent:'center'}} title="Odśwież">
-            <i className="ti ti-refresh" style={{fontSize:22}}/>
-          </button>
-          <button onClick={()=>setMobileMenuOpen(p=>!p)} style={{background:'none',border:'none',cursor:'pointer',padding:'8px',display:'flex',flexDirection:'column',gap:5,alignItems:'center',justifyContent:'center'}}>
-          <div style={{width:24,height:2,background:'#1a1a18',borderRadius:2,transition:'transform 0.2s',transform:isMobileMenuOpen?'rotate(45deg) translate(5px,5px)':'none'}}/>
-          <div style={{width:24,height:2,background:'#1a1a18',borderRadius:2,opacity:isMobileMenuOpen?0:1,transition:'opacity 0.2s'}}/>
-          <div style={{width:24,height:2,background:'#1a1a18',borderRadius:2,transition:'transform 0.2s',transform:isMobileMenuOpen?'rotate(-45deg) translate(5px,-5px)':'none'}}/>
-        </button>
+    {/* Mobile menu — overlay + dropdown from top-right */}
+    {isMobileMenuOpen&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',zIndex:1001}} onClick={()=>setMobileMenuOpen(false)}/>}
+    {isMobileMenuOpen&&<div style={{position:'fixed',top:44,right:0,width:260,maxHeight:'85vh',overflowY:'auto',background:'#fff',zIndex:1002,boxShadow:'-2px 4px 20px rgba(0,0,0,0.15)',borderRadius:'0 0 0 14px',display:'flex',flexDirection:'column'}}>
+      <div style={{padding:'12px 14px',borderBottom:'0.5px solid rgba(0,0,0,0.08)',background:'#f5f4f0',display:'flex',alignItems:'center',gap:10}}>
+        <div style={{width:30,height:30,borderRadius:'50%',background:'#1a1a18',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><i className="ti ti-user" style={{color:'#fff',fontSize:14}}/></div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{profile.full_name||profile.email}</div>
+          <span style={{...bdg(isAdmin?'amber':'blue'),fontSize:9}}>{isAdmin?'Admin':'Pracownik'}</span>
         </div>
       </div>
-      {/* Dropdown menu */}
-      {isMobileMenuOpen&&<div style={{background:'#fff',borderTop:'0.5px solid rgba(0,0,0,0.1)',maxHeight:'70vh',overflowY:'auto',paddingBottom:'env(safe-area-inset-bottom)'}}>
-        {/* User info */}
-        <div style={{padding:'12px 16px',borderBottom:'0.5px solid rgba(0,0,0,0.08)',display:'flex',alignItems:'center',gap:10,background:'#f5f4f0'}}>
-          <div style={{width:32,height:32,borderRadius:'50%',background:'#1a1a18',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><i className="ti ti-user" style={{color:'#fff',fontSize:15}}/></div>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{profile.full_name||profile.email}</div>
-            <div style={{fontSize:10,color:'#888'}}><span style={bdg(isAdmin?'amber':'blue')}>{isAdmin?'Admin':'Pracownik'}</span></div>
+      {visibleMods.map(m=>(
+        <button key={m.id} onClick={()=>{setActive(m.id);setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'11px 14px',border:'none',borderBottom:'0.5px solid rgba(0,0,0,0.06)',background:active===m.id?'#f5f4f0':'#fff',cursor:'pointer',textAlign:'left'}}>
+          <div style={{width:30,height:30,borderRadius:8,background:active===m.id?'#1a1a18':'#f5f4f0',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <i className={`ti ${m.icon}`} style={{fontSize:15,color:active===m.id?'#fff':'#555'}}/>
           </div>
-          <div style={{display:'flex',alignItems:'center',gap:4,fontSize:10}}>
-            <span style={{width:7,height:7,borderRadius:'50%',background:sbStatus==='ok'?'#3B6D11':'#A32D2D',display:'inline-block'}}/>
-            <span style={{color:'#888'}}>{sbStatus==='ok'?'Online':'Offline'}</span>
-          </div>
-        </div>
-        {/* Module list */}
-        {visibleMods.map(m=>(
-          <button key={m.id} onClick={()=>{setActive(m.id);setMobileMenuOpen(false);}} style={{
-            display:'flex',alignItems:'center',gap:14,width:'100%',padding:'14px 16px',
-            border:'none',borderBottom:'0.5px solid rgba(0,0,0,0.06)',
-            background:active===m.id?'#f5f4f0':'#fff',
-            cursor:'pointer',textAlign:'left',
-          }}>
-            <div style={{width:36,height:36,borderRadius:9,background:active===m.id?'#1a1a18':'#f5f4f0',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <i className={`ti ${m.icon}`} style={{fontSize:18,color:active===m.id?'#fff':'#555'}}/>
-            </div>
-            <span style={{fontSize:15,fontWeight:active===m.id?600:400,color:active===m.id?'#1a1a18':'#333'}}>{m.label}</span>
-            {active===m.id&&<i className="ti ti-chevron-right" style={{marginLeft:'auto',color:'#888',fontSize:14}}/>}
-          </button>
-        ))}
-        {/* Logout */}
-        <button onClick={()=>{handleLogout();setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',gap:14,width:'100%',padding:'14px 16px',border:'none',background:'#fff',cursor:'pointer',color:'#A32D2D',borderTop:'1px solid rgba(0,0,0,0.08)'}}>
-          <div style={{width:36,height:36,borderRadius:9,background:'#FCEBEB',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-            <i className="ti ti-logout" style={{fontSize:18,color:'#A32D2D'}}/>
-          </div>
-          <span style={{fontSize:15,fontWeight:400}}>Wyloguj się</span>
+          <span style={{fontSize:13,fontWeight:active===m.id?600:400,color:active===m.id?'#1a1a18':'#333'}}>{m.label}</span>
+          {active===m.id&&<i className="ti ti-chevron-right" style={{marginLeft:'auto',color:'#888',fontSize:12}}/>}
         </button>
-      </div>}
-    </div>
+      ))}
+      <button onClick={()=>{handleLogout();setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'11px 14px',border:'none',background:'#fff',cursor:'pointer',color:'#A32D2D',borderTop:'1px solid rgba(0,0,0,0.08)'}}>
+        <div style={{width:30,height:30,borderRadius:8,background:'#FCEBEB',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><i className="ti ti-logout" style={{fontSize:15,color:'#A32D2D'}}/></div>
+        <span style={{fontSize:13}}>Wyloguj się</span>
+      </button>
+    </div>}
+
 
     <main style={C.main}>
       <header style={C.topbar}>
         <div style={{fontSize:13,color:'#888'}}>{cur?.label}</div>
-        <div style={{fontSize:11,color:'#aaa',display:'flex',alignItems:'center',gap:8}}>
-          <span className="tm-hide-mobile">{new Date().toLocaleDateString('pl-PL',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</span>
+        <div style={{display:'flex',alignItems:'center',gap:6}}>
+          <span style={{fontSize:11,color:'#aaa'}} className="tm-hide-mobile">{new Date().toLocaleDateString('pl-PL',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</span>
           <span style={{fontSize:11,color:sbStatus==='ok'?'#3B6D11':'#A32D2D'}} className="tm-hide-mobile">{sbStatus==='ok'?'●':'○'}</span>
-          {/* Mobile: show user info in header */}
-          <span style={{fontSize:11,fontWeight:500}}>{profile.full_name||profile.email?.split('@')[0]}</span>
+          <span style={{fontSize:11,fontWeight:500,color:'#888'}} className="tm-hide-mobile">{profile.full_name||profile.email?.split('@')[0]}</span>
+          {/* Mobile controls — top right */}
+          <button className="tm-mobile-only" onClick={()=>window.location.reload()} style={{background:'none',border:'none',cursor:'pointer',padding:'5px',color:'#888',display:'none',alignItems:'center'}} title="Odśwież"><i className="ti ti-refresh" style={{fontSize:21}}/></button>
+          <button className="tm-mobile-only" onClick={()=>setMobileMenuOpen(p=>!p)} style={{background:'none',border:'none',cursor:'pointer',padding:'5px',display:'none',flexDirection:'column',gap:4.5,alignItems:'center',justifyContent:'center',width:32,height:32}} aria-label="Menu">
+            <div style={{width:20,height:2,background:'#1a1a18',borderRadius:2,transition:'all 0.2s',transform:isMobileMenuOpen?'rotate(45deg) translateY(6.5px)':'none'}}/>
+            <div style={{width:20,height:2,background:'#1a1a18',borderRadius:2,transition:'all 0.2s',opacity:isMobileMenuOpen?0:1}}/>
+            <div style={{width:20,height:2,background:'#1a1a18',borderRadius:2,transition:'all 0.2s',transform:isMobileMenuOpen?'rotate(-45deg) translateY(-6.5px)':'none'}}/>
+          </button>
         </div>
       </header>
       <div style={C.content} className="tm-content">
