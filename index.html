@@ -9,36 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="TransportManager">
 <meta name="theme-color" content="#1a1a18">
 <script>
-// Pull-to-refresh — only when at very top and dragging DOWN
-(function(){
-  let startY=0,startScrollY=0,pulling=false,ptr=null,threshold=80;
-  document.addEventListener('touchstart',e=>{
-    startScrollY=window.scrollY;
-    startY=e.touches[0].clientY;
-    pulling=startScrollY<=0; // only arm if already at top
-  },{passive:true});
-  document.addEventListener('touchmove',e=>{
-    if(!pulling)return;
-    const dy=e.touches[0].clientY-startY;
-    if(dy<=0){pulling=false;return;} // scrolling up→down direction only
-    if(window.scrollY>0){pulling=false;return;} // scrolled away from top
-    const pct=Math.min(1,dy/threshold);
-    if(dy>20&&!ptr){
-      ptr=document.createElement('div');
-      ptr.style.cssText='position:fixed;top:0;left:0;right:0;text-align:center;padding:8px;background:#1a1a18;color:#fff;font-size:13px;z-index:99999;transition:opacity 0.2s;';
-      document.body.appendChild(ptr);
-    }
-    if(ptr){ptr.innerHTML=dy>threshold?'↻ Puść aby odświeżyć':'↓ Przeciągnij niżej aby odświeżyć';ptr.style.opacity=pct;}
-  },{passive:true});
-  document.addEventListener('touchend',()=>{
-    if(ptr){
-      const doReload=ptr.innerHTML.includes('Puść');
-      document.body.removeChild(ptr);ptr=null;
-      if(doReload)window.location.reload();
-    }
-    pulling=false;
-  },{passive:true});
-})();
+// No pull-to-refresh — refresh button in mobile bar instead
 </script>
 <title>TransportManager</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
@@ -59,123 +30,95 @@ button{cursor:pointer}
 @media(max-width:768px){
   aside{display:none!important}
   main{width:100%!important;flex:1}
-  header{padding:8px 12px!important;min-height:44px}
-  .tm-content{padding:10px!important;padding-bottom:72px!important}
+  header{padding:8px 14px!important;min-height:48px}
+  .tm-content{padding:12px 10px!important;padding-bottom:72px!important;overflow-x:hidden}
 
-  /* Hide desktop-only sections on mobile */
   .tm-desktop-only{display:none!important}
-
-  /* Mobile bottom bar — hamburger */
   .tm-mobile-bar{display:flex!important;flex-direction:column-reverse;}
-
-  /* Old bottom nav — hidden */
   .tm-bottom-nav{display:none!important}
 
-  /* Grids → single column */
+  /* ALL GRIDS → single column */
   div[style*="gridTemplateColumns"]{grid-template-columns:1fr!important}
 
-  /* Modals → full screen bottom sheet */
+  /* MODAL → full-screen bottom sheet */
   .modal-box{
     width:100%!important;max-width:100%!important;
-    min-height:50vh;max-height:95vh!important;
-    border-radius:16px 16px 0 0!important;
-    margin:0!important;
-    overflow-y:auto;
+    min-height:60vh;max-height:96vh!important;
+    border-radius:18px 18px 0 0!important;
+    margin:0!important;overflow-y:auto;
     position:fixed!important;bottom:0;left:0;right:0;
+    padding:16px 14px!important;
   }
-  .tm-ov{
-    align-items:flex-end!important;
-    padding:0!important;
-  }
+  .tm-ov{align-items:flex-end!important;padding:0!important;}
 
-  /* INPUT bigger → no iOS zoom */
+  /* INPUTS — prevent iOS zoom + comfortable touch */
   input[type=text],input[type=date],input[type=email],
   input[type=number],input[type=password],input[type=month],
-  select,textarea{
+  input[type=time],select,textarea{
     font-size:16px!important;
-    padding:10px 12px!important;
+    padding:12px 13px!important;
     border-radius:10px!important;
+    min-height:46px;
   }
-  button{min-height:40px;font-size:13px!important}
+  label{font-size:12px!important}
+  button{min-height:44px;font-size:14px!important}
 
-  /* ── TABLES → CARD LIST ───────────────────────────── */
-  /* Hide table header */
+  /* H1 */
+  h1{font-size:17px!important}
+
+  /* CARD */
+  div[class*="card"]{border-radius:12px!important}
+
+  /* ── TABLES → CARD LIST ─────────────────────────── */
+  table{width:100%!important}
   table thead{display:none!important}
-
-  /* Each row = card */
   table tbody tr{
     display:block!important;
     background:#fff;
-    border-radius:12px!important;
-    margin-bottom:10px!important;
-    padding:12px!important;
-    box-shadow:0 1px 4px rgba(0,0,0,0.06);
+    border-radius:13px!important;
+    margin-bottom:12px!important;
+    padding:14px 14px 10px!important;
+    box-shadow:0 1px 6px rgba(0,0,0,0.07);
     border:0.5px solid rgba(0,0,0,0.08);
+    overflow:hidden;
   }
-
-  /* Each cell = row with label */
   table tbody td{
     display:flex!important;
     align-items:center;
-    padding:4px 0!important;
+    padding:5px 0!important;
     border:none!important;
-    font-size:13px!important;
+    font-size:14px!important;
     gap:8px;
     flex-wrap:wrap;
+    line-height:1.4;
   }
-
-  /* First cell = bold title */
   table tbody td:first-child{
-    font-size:14px!important;
-    font-weight:600!important;
+    font-size:15px!important;font-weight:700!important;
+    padding-bottom:10px!important;
+    border-bottom:1px solid rgba(0,0,0,0.06)!important;
     margin-bottom:4px;
-    padding-bottom:8px!important;
-    border-bottom:0.5px solid rgba(0,0,0,0.07)!important;
   }
-
-  /* Action buttons cell — right aligned */
   table tbody td:last-child{
     justify-content:flex-end!important;
-    padding-top:8px!important;
+    padding-top:10px!important;
     border-top:0.5px solid rgba(0,0,0,0.06)!important;
-    margin-top:4px;
-    gap:6px;
+    margin-top:6px;gap:8px;
   }
-
-  /* Show data-label before each cell */
   table tbody td[data-label]:before{
     content:attr(data-label);
-    font-size:10px;
-    color:#888;
-    font-weight:500;
-    text-transform:uppercase;
-    letter-spacing:0.04em;
-    white-space:nowrap;
-    min-width:80px;
+    font-size:11px;color:#888;font-weight:600;
+    text-transform:uppercase;letter-spacing:0.04em;
+    white-space:nowrap;min-width:90px;flex-shrink:0;
   }
-
-  /* Hide less important columns */
   table tbody td.tm-hide-mobile{display:none!important}
 
-  /* Stat tiles - 2 columns */
-  .tm-stats-grid{grid-template-columns:1fr 1fr!important}
-
-  /* Full width buttons */
-  .tm-btn-full{width:100%!important;justify-content:center!important}
-
-  /* Header title */
-  header div:first-child{font-size:15px!important;font-weight:600!important}
-  header div:last-child{font-size:10px!important}
-
-  /* Card padding smaller */
-  div[style*="padding:'12px 16px'"]{padding:10px 12px!important}
-
-  /* h1 smaller */
-  h1{font-size:16px!important}
+  /* BADGES inline */
+  span[style*="borderRadius:20"]{font-size:11px!important;padding:3px 8px!important}
 }
 
 @media(min-width:769px){
   .tm-bottom-nav{display:none!important}
+  .tm-mobile-bar{display:none!important}
 }
 </style>
 </head>
@@ -3547,6 +3490,7 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
   const cur=curDay?dayStats(curDay):{driveMin:0,workMin:0,breakMin:0,violations:[],nextStart:'',nextStartReduced:'',driveLeft:TACHO_RULES.maxDriveDay,driveLeftExt:TACHO_RULES.maxDriveDayExtended};
   const typeColor=t=>ACTS.find(a=>a.id===t)?.color||'#888';
   const Bar=({val,max,col,h=5})=><div style={{height:h,background:'#e0dfd8',borderRadius:h/2,overflow:'hidden'}}><div style={{height:'100%',width:`${Math.min(100,Math.round(val/max*100))}%`,background:col,borderRadius:h/2}}/></div>;
+  const mobile=window.innerWidth<=768;
   return(<div style={{position:'fixed',inset:0,background:'#f5f4f0',zIndex:20000,display:'flex',flexDirection:'column',overflow:'hidden'}}>
     <div style={{background:'#1a1a18',color:'#fff',padding:'10px 18px',display:'flex',alignItems:'center',gap:12,flexShrink:0}}>
       <button style={{...C.btn,background:'transparent',color:'#fff',border:'0.5px solid rgba(255,255,255,0.3)',padding:'4px 10px'}} onClick={onClose}><i className="ti ti-arrow-left"/> Wróć</button>
@@ -3556,9 +3500,9 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
       </div>
       <button style={{...C.btnP,background:'#3B6D11',border:'none',padding:'6px 14px'}} onClick={()=>{setEntries(days);onSave(days);}}><i className="ti ti-device-floppy"/> Zapisz</button>
     </div>
-    <div style={{flex:1,display:'flex',overflow:'hidden'}}>
-      {/* Day list */}
-      <div style={{width:190,background:'#fff',borderRight:'0.5px solid rgba(0,0,0,0.1)',display:'flex',flexDirection:'column',flexShrink:0}}>
+    <div style={{flex:1,display:'flex',overflow:'hidden',flexDirection:mobile?'column':'row'}}>
+      {/* Day list — horizontal tabs on mobile, vertical sidebar on desktop */}
+      {!mobile&&<div style={{width:190,background:'#fff',borderRight:'0.5px solid rgba(0,0,0,0.1)',display:'flex',flexDirection:'column',flexShrink:0}}>
         <div style={{padding:'8px 10px',borderBottom:'0.5px solid rgba(0,0,0,0.08)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div style={{fontSize:10,fontWeight:500,color:'#888'}}>DNI ({days.length})</div>
           <button style={{...C.btnP,padding:'2px 8px',fontSize:11}} onClick={addDay}><i className="ti ti-plus"/></button>
@@ -3576,7 +3520,18 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
             </div>;
           })}
         </div>
-      </div>
+      </div>}
+      {mobile&&<div style={{background:'#fff',borderBottom:'1px solid rgba(0,0,0,0.1)',overflowX:'auto',display:'flex',flexShrink:0,padding:'6px 8px',gap:6}}>
+        {days.map((d,i)=>{
+          const s=dayStats(d);const hasDanger=s.violations.some(v=>v.type==='danger');const hasWarn=s.violations.some(v=>v.type==='warning');
+          return<button key={d.id} onClick={()=>setSelDay(i)} style={{flexShrink:0,padding:'6px 10px',borderRadius:8,border:'none',cursor:'pointer',background:selDay===i?'#1a1a18':hasDanger?'#FCEBEB':hasWarn?'#FAEEDA':'#f5f4f0',color:selDay===i?'#fff':'#1a1a18',fontSize:12,fontWeight:selDay===i?600:400,minWidth:64,textAlign:'center'}}>
+            <div>{d.date?d.date.slice(5):'-'}</div>
+            <div style={{fontSize:9,color:selDay===i?'rgba(255,255,255,0.6)':'#888'}}>{d.date&&['Nd','Pn','Wt','Śr','Cz','Pt','So'][new Date(d.date).getDay()]}</div>
+            {hasDanger&&<div style={{fontSize:9,color:selDay===i?'#FFD700':'#A32D2D'}}>⚠</div>}
+          </button>;
+        })}
+        <button onClick={addDay} style={{flexShrink:0,padding:'6px 12px',borderRadius:8,border:'2px dashed #ccc',background:'transparent',cursor:'pointer',color:'#888',fontSize:18}}>+</button>
+      </div>}
       {/* Day detail */}
       <div style={{flex:1,overflowY:'auto',padding:'14px 18px'}}>
         {curDay&&<>
@@ -3635,8 +3590,8 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
           </div>}
         </>}
       </div>
-      {/* Summary panel */}
-      <div style={{width:270,background:'#fff',borderLeft:'0.5px solid rgba(0,0,0,0.1)',overflowY:'auto',padding:'14px',flexShrink:0}}>
+      {/* Summary panel — desktop only */}
+      {!mobile&&<div style={{width:270,background:'#fff',borderLeft:'0.5px solid rgba(0,0,0,0.1)',overflowY:'auto',padding:'14px',flexShrink:0}}>
         <div style={{fontSize:11,fontWeight:600,color:'#888',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10}}>Statystyki</div>
         {[{label:`Jazda tygodniowa (${curWeekKey})`,val:lastW?.drive||0,max:TACHO_RULES.maxDriveWeek},{label:`Jazda 2 tygodnie (${curWeekNum>1?`T${curWeekNum-1}+T${curWeekNum}`:`T${curWeekNum}`})`,val:totalDrive,max:TACHO_RULES.maxDriveTwoWeeks}].map(({label,val,max})=>{
           const pct=Math.min(100,Math.round(val/max*100));const col=pct>95?'#A32D2D':pct>80?'#854F0B':'#3B6D11';
@@ -3689,6 +3644,18 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
         </div>
       </div>
     </div>
+    {mobile&&cur.driveMin>0&&<div style={{background:'#fff',borderBottom:'1px solid rgba(0,0,0,0.08)',padding:'8px 12px',display:'flex',gap:10,overflowX:'auto',flexShrink:0,order:-1}}>
+      {[
+        {l:'Jazda',v:fromMin(cur.driveMin),c:cur.driveMin>TACHO_RULES.maxDriveDayExtended?'#A32D2D':cur.driveMin>TACHO_RULES.maxDriveDay?'#854F0B':'#185FA5'},
+        {l:'Pozostało',v:fromMin(cur.driveMin>TACHO_RULES.maxDriveDay?cur.driveLeftExt:cur.driveLeft),c:'#3B6D11'},
+        {l:'Przerwa',v:fromMin(cur.breakMin),c:cur.breakMin<TACHO_RULES.minBreak&&cur.driveMin>=TACHO_RULES.minBreakAfter?'#A32D2D':'#888'},
+        {l:'W tygodniu',v:fromMin(lastW?.drive||0),c:(lastW?.drive||0)>TACHO_RULES.maxDriveWeek?'#A32D2D':'#854F0B'},
+        {l:'Skr.odp.',v:`${reducedRests[curWeekKey]||0}/3`,c:(reducedRests[curWeekKey]||0)>=3?'#A32D2D':'#888'},
+      ].map(({l,v,c})=><div key={l} style={{flexShrink:0,textAlign:'center',minWidth:64}}>
+        <div style={{fontSize:9,color:'#888',marginBottom:1}}>{l}</div>
+        <div style={{fontSize:14,fontWeight:700,color:c}}>{v}</div>
+      </div>)}
+    </div>}
   </div>);
 };
 
@@ -5322,11 +5289,16 @@ function App(){
       {/* Bottom bar with hamburger */}
       <div style={{background:'#fff',borderTop:'1px solid rgba(0,0,0,0.12)',height:60,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px'}}>
         <div style={{fontSize:13,fontWeight:600,color:'#1a1a18'}}>{visibleMods.find(m=>m.id===active)?.label||''}</div>
-        <button onClick={()=>setMobileMenuOpen(p=>!p)} style={{background:'none',border:'none',cursor:'pointer',padding:'8px',display:'flex',flexDirection:'column',gap:5,alignItems:'center',justifyContent:'center'}}>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <button onClick={()=>window.location.reload()} style={{background:'none',border:'none',cursor:'pointer',padding:'8px',color:'#888',display:'flex',alignItems:'center',justifyContent:'center'}} title="Odśwież">
+            <i className="ti ti-refresh" style={{fontSize:22}}/>
+          </button>
+          <button onClick={()=>setMobileMenuOpen(p=>!p)} style={{background:'none',border:'none',cursor:'pointer',padding:'8px',display:'flex',flexDirection:'column',gap:5,alignItems:'center',justifyContent:'center'}}>
           <div style={{width:24,height:2,background:'#1a1a18',borderRadius:2,transition:'transform 0.2s',transform:isMobileMenuOpen?'rotate(45deg) translate(5px,5px)':'none'}}/>
           <div style={{width:24,height:2,background:'#1a1a18',borderRadius:2,opacity:isMobileMenuOpen?0:1,transition:'opacity 0.2s'}}/>
           <div style={{width:24,height:2,background:'#1a1a18',borderRadius:2,transition:'transform 0.2s',transform:isMobileMenuOpen?'rotate(-45deg) translate(5px,-5px)':'none'}}/>
         </button>
+        </div>
       </div>
       {/* Dropdown menu */}
       {isMobileMenuOpen&&<div style={{background:'#fff',borderTop:'0.5px solid rgba(0,0,0,0.1)',maxHeight:'70vh',overflowY:'auto',paddingBottom:'env(safe-area-inset-bottom)'}}>
