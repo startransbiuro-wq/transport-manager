@@ -60,44 +60,16 @@ button{cursor:pointer}
   aside{display:none!important}
   main{width:100%!important;flex:1}
   header{padding:8px 12px!important;min-height:44px}
-  .tm-content{padding:10px!important;padding-bottom:76px!important}
+  .tm-content{padding:10px!important;padding-bottom:72px!important}
 
   /* Hide desktop-only sections on mobile */
   .tm-desktop-only{display:none!important}
 
-  /* Bottom navigation — fixed, no accidental swipe */
-  .tm-bottom-nav{
-    display:flex!important;
-    position:fixed;bottom:0;left:0;right:0;
-    background:#fff;
-    border-top:1px solid rgba(0,0,0,0.12);
-    z-index:1000;
-    height:66px;
-    padding-bottom:env(safe-area-inset-bottom);
-    overflow-x:auto;overflow-y:hidden;
-    -webkit-overflow-scrolling:touch;
-    scrollbar-width:none;
-    touch-action:pan-x; /* allow only horizontal scroll, no vertical swipe */
-    overscroll-behavior-x:contain;
-  }
-  .tm-bottom-nav::-webkit-scrollbar{display:none}
-  .tm-bottom-nav-item{
-    display:flex;flex-direction:column;align-items:center;justify-content:center;
-    min-width:68px;flex:1;padding:6px 6px 4px;gap:3px;
-    font-size:10px;color:#888;cursor:pointer;white-space:nowrap;
-    border:none;background:none;
-    -webkit-tap-highlight-color:transparent;
-    touch-action:manipulation; /* prevent double-tap zoom */
-    position:relative;
-  }
-  .tm-bottom-nav-item.active{color:#1a1a18;font-weight:600}
-  .tm-bottom-nav-item.active i{color:#1a1a18}
-  .tm-bottom-nav-item.active::before{
-    content:'';position:absolute;top:0;left:20%;right:20%;
-    height:3px;background:#1a1a18;border-radius:0 0 3px 3px;
-  }
-  .tm-bottom-nav-item i{font-size:23px;line-height:1}
-  .tm-bottom-nav-item span{font-size:10px;line-height:1.2}
+  /* Mobile bottom bar — hamburger */
+  .tm-mobile-bar{display:flex!important;flex-direction:column-reverse;}
+
+  /* Old bottom nav — hidden */
+  .tm-bottom-nav{display:none!important}
 
   /* Grids → single column */
   div[style*="gridTemplateColumns"]{grid-template-columns:1fr!important}
@@ -5284,6 +5256,7 @@ function App(){
 
   // ALL HOOKS MUST BE BEFORE ANY CONDITIONAL RETURN
   const [pendingInvoice,setPendingInvoice]=useState(null);
+  const [isMobileMenuOpen,setMobileMenuOpen]=useState(false);
   const [invoicePreviewTarget,setInvoicePreviewTarget]=useState(null);
   const [repairFilter,setRepairFilter]=useState(null);
   const db={
@@ -5343,18 +5316,55 @@ function App(){
       </div>
     </aside>
 
-    {/* Bottom navigation — mobile only */}
-    <div className="tm-bottom-nav">
-      {bottomNavMods.map(m=>(
-        <button key={m.id} className={`tm-bottom-nav-item${active===m.id?' active':''}`} onClick={()=>setActive(m.id)}>
-          <i className={`ti ${m.icon}`}/>
-          <span>{m.short||m.label}</span>
+    {/* Hamburger menu — mobile only */}
+    {isMobileMenuOpen&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:1001}} onClick={()=>setMobileMenuOpen(false)}/>}
+    <div style={{position:'fixed',bottom:0,left:0,right:0,zIndex:1002,display:'none'}} className="tm-mobile-bar">
+      {/* Bottom bar with hamburger */}
+      <div style={{background:'#fff',borderTop:'1px solid rgba(0,0,0,0.12)',height:60,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px'}}>
+        <div style={{fontSize:13,fontWeight:600,color:'#1a1a18'}}>{visibleMods.find(m=>m.id===active)?.label||''}</div>
+        <button onClick={()=>setMobileMenuOpen(p=>!p)} style={{background:'none',border:'none',cursor:'pointer',padding:'8px',display:'flex',flexDirection:'column',gap:5,alignItems:'center',justifyContent:'center'}}>
+          <div style={{width:24,height:2,background:'#1a1a18',borderRadius:2,transition:'transform 0.2s',transform:isMobileMenuOpen?'rotate(45deg) translate(5px,5px)':'none'}}/>
+          <div style={{width:24,height:2,background:'#1a1a18',borderRadius:2,opacity:isMobileMenuOpen?0:1,transition:'opacity 0.2s'}}/>
+          <div style={{width:24,height:2,background:'#1a1a18',borderRadius:2,transition:'transform 0.2s',transform:isMobileMenuOpen?'rotate(-45deg) translate(5px,-5px)':'none'}}/>
         </button>
-      ))}
-      <button className="tm-bottom-nav-item" onClick={handleLogout} style={{color:'#A32D2D'}}>
-        <i className="ti ti-logout"/>
-        <span>Wyloguj</span>
-      </button>
+      </div>
+      {/* Dropdown menu */}
+      {isMobileMenuOpen&&<div style={{background:'#fff',borderTop:'0.5px solid rgba(0,0,0,0.1)',maxHeight:'70vh',overflowY:'auto',paddingBottom:'env(safe-area-inset-bottom)'}}>
+        {/* User info */}
+        <div style={{padding:'12px 16px',borderBottom:'0.5px solid rgba(0,0,0,0.08)',display:'flex',alignItems:'center',gap:10,background:'#f5f4f0'}}>
+          <div style={{width:32,height:32,borderRadius:'50%',background:'#1a1a18',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><i className="ti ti-user" style={{color:'#fff',fontSize:15}}/></div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{profile.full_name||profile.email}</div>
+            <div style={{fontSize:10,color:'#888'}}><span style={bdg(isAdmin?'amber':'blue')}>{isAdmin?'Admin':'Pracownik'}</span></div>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:4,fontSize:10}}>
+            <span style={{width:7,height:7,borderRadius:'50%',background:sbStatus==='ok'?'#3B6D11':'#A32D2D',display:'inline-block'}}/>
+            <span style={{color:'#888'}}>{sbStatus==='ok'?'Online':'Offline'}</span>
+          </div>
+        </div>
+        {/* Module list */}
+        {visibleMods.map(m=>(
+          <button key={m.id} onClick={()=>{setActive(m.id);setMobileMenuOpen(false);}} style={{
+            display:'flex',alignItems:'center',gap:14,width:'100%',padding:'14px 16px',
+            border:'none',borderBottom:'0.5px solid rgba(0,0,0,0.06)',
+            background:active===m.id?'#f5f4f0':'#fff',
+            cursor:'pointer',textAlign:'left',
+          }}>
+            <div style={{width:36,height:36,borderRadius:9,background:active===m.id?'#1a1a18':'#f5f4f0',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <i className={`ti ${m.icon}`} style={{fontSize:18,color:active===m.id?'#fff':'#555'}}/>
+            </div>
+            <span style={{fontSize:15,fontWeight:active===m.id?600:400,color:active===m.id?'#1a1a18':'#333'}}>{m.label}</span>
+            {active===m.id&&<i className="ti ti-chevron-right" style={{marginLeft:'auto',color:'#888',fontSize:14}}/>}
+          </button>
+        ))}
+        {/* Logout */}
+        <button onClick={()=>{handleLogout();setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',gap:14,width:'100%',padding:'14px 16px',border:'none',background:'#fff',cursor:'pointer',color:'#A32D2D',borderTop:'1px solid rgba(0,0,0,0.08)'}}>
+          <div style={{width:36,height:36,borderRadius:9,background:'#FCEBEB',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <i className="ti ti-logout" style={{fontSize:18,color:'#A32D2D'}}/>
+          </div>
+          <span style={{fontSize:15,fontWeight:400}}>Wyloguj się</span>
+        </button>
+      </div>}
     </div>
 
     <main style={C.main}>
