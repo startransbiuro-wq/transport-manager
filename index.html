@@ -594,8 +594,10 @@ const Dashboard=({db})=>{
 
     {/* TO DO + WSKAŹNIKI */}
     <div style={{display:'grid',gridTemplateColumns:'2.6fr 1fr',gap:14,marginBottom:18,alignItems:'start'}}>
-    <div style={C.card}>      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+    <div style={C.card}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
         <div style={{fontSize:12,fontWeight:500,display:'flex',alignItems:'center',gap:5}}><i className="ti ti-list-check"/>To do</div>
+        <div style={{display:'flex',gap:5}}>
           <button style={{...C.btn,fontSize:11,padding:'2px 7px'}} onClick={()=>setShowDoneTodos(p=>!p)}>{showDoneTodos?'Skryj wykonane':'Pokaż wykonane'}</button>
           <button style={{...C.btnP,fontSize:11,padding:'2px 7px'}} onClick={()=>{setTodoForm({deadline:today()});setTodoModal(true)}}><i className="ti ti-plus"/> Dodaj</button>
         </div>
@@ -636,7 +638,6 @@ const Dashboard=({db})=>{
         })}</div>;
       })()}
     </div>
-
     {todoModal&&<Modal title={todoForm.id?'Edytuj zadanie':'Nowe zadanie'} onClose={()=>setTodoModal(false)}>
       <div style={C.g2}>
         <div style={{gridColumn:'span 2'}}><label style={C.lbl}>Tytuł</label><input style={C.inp} value={todoForm.title||''} onChange={e=>setTodoForm(p=>({...p,title:e.target.value}))} placeholder="np. Złożyć wniosek o zezwolenie"/></div>
@@ -660,52 +661,6 @@ const Dashboard=({db})=>{
       </div>
     </Modal>}
 
-    {/* TO DO + WSKAŹNIKI — two column grid */}
-    <div style={{display:'grid',gridTemplateColumns:'2.6fr 1fr',gap:14,marginBottom:18,alignItems:'start'}}>
-      <div style={C.card}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-          <div style={{fontSize:12,fontWeight:500,display:'flex',alignItems:'center',gap:5}}><i className="ti ti-list-check"/>To do</div>
-          <div style={{display:'flex',gap:6}}>
-            <button style={{...C.btn,fontSize:11,padding:'2px 7px'}} onClick={()=>setShowDoneTodos(p=>!p)}>{showDoneTodos?'Skryj wykonane':'Pokaż wykonane'}</button>
-            <button style={{...C.btnP,fontSize:11,padding:'2px 7px'}} onClick={()=>{setTodoForm({deadline:today()});setTodoModal(true)}}><i className="ti ti-plus"/> Dodaj</button>
-          </div>
-        </div>
-        {(()=>{
-          const PRIO={critical:0,high:1,normal:2,low:3};
-          const visible=todos.filter(t=>showDoneTodos||!t.done).sort((a,b)=>{
-            const pa=PRIO[a.priority||'normal']??2,pb=PRIO[b.priority||'normal']??2;
-            if(pa!==pb)return pa-pb;
-            return(a.deadline||'9999').localeCompare(b.deadline||'9999');
-          });
-          if(visible.length===0)return<div style={{fontSize:11,color:'#888'}}>Brak zadań{showDoneTodos?'':' do wykonania'}.</div>;
-          return<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:10}}>{visible.map(t=>{
-            const d=daysUntil(t.deadline);
-            const overdue=!t.done&&d!==null&&d<0;
-            const soon=!t.done&&d!==null&&d>=0&&d<=2;
-            const prioColor={critical:'#A32D2D',high:'#854F0B',normal:'#185FA5',low:'#3B6D11'}[t.priority||'normal'];
-            const prioLabel={critical:'🔴 Krytyczny',high:'🟠 Wysoki',normal:'🔵 Normalny',low:'🟢 Niski'}[t.priority||'normal'];
-            return(<div key={t.id} style={{border:`0.5px solid rgba(0,0,0,0.08)`,borderLeft:`3px solid ${t.done?'#e0dfd8':prioColor}`,borderRadius:9,padding:'10px 12px',display:'flex',flexDirection:'column',gap:6,background:t.done?'#fafaf8':'#fff'}}>
-              <div style={{display:'flex',alignItems:'flex-start',gap:8}}>
-                <input type="checkbox" checked={t.done||false} onChange={()=>setTodos(p=>p.map(x=>x.id===t.id?{...x,done:!x.done}:x))} style={{width:15,height:15,cursor:'pointer',marginTop:2}}/>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,fontWeight:500,textDecoration:t.done?'line-through':'none',color:t.done?'#aaa':'#1a1a18'}}>{t.title}</div>
-                  {!t.done&&<div style={{fontSize:9,color:prioColor,fontWeight:500,marginTop:2}}>{prioLabel}</div>}
-                </div>
-              </div>
-              {t.note&&<div style={{fontSize:10,color:'#888'}}>{t.note}</div>}
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:'auto',paddingTop:4}}>
-                {t.deadline?<span style={bdg(t.done?'gray':overdue?'red':soon?'amber':'blue')}>
-                  {overdue?`${Math.abs(d)} dni po terminie`:d===0?'Dziś':d===1?'Jutro':`${t.deadline}`}
-                </span>:<span/>}
-                <div style={{display:'flex',gap:3}}>
-                  <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setTodoForm(t);setTodoModal(true)}}><i className="ti ti-edit"/></button>
-                  <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setTodos(p=>p.filter(x=>x.id!==t.id))}><i className="ti ti-trash"/></button>
-                </div>
-              </div>
-            </div>);
-          })}</div>;
-        })()}
-      </div>
       <div className="tm-desktop-only" style={C.card}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
         <div style={{fontSize:12,fontWeight:500,display:'flex',alignItems:'center',gap:5}}><i className="ti ti-gauge"/>Wskaźniki operacyjne</div>
@@ -5220,7 +5175,7 @@ function App(){
           <span style={{...bdg(isAdmin?'amber':'blue'),fontSize:9}}>{isAdmin?'Admin':'Pracownik'}</span>
         </div>
       </div>
-      {visibleMods.map(m=>(
+      {visibleMods.filter(m=>m.mobile).map(m=>(
         <button key={m.id} onClick={()=>{setActive(m.id);setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'11px 14px',border:'none',borderBottom:'0.5px solid rgba(0,0,0,0.06)',background:active===m.id?'#f5f4f0':'#fff',cursor:'pointer',textAlign:'left'}}>
           <div style={{width:30,height:30,borderRadius:8,background:active===m.id?'#1a1a18':'#f5f4f0',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
             <i className={`ti ${m.icon}`} style={{fontSize:15,color:active===m.id?'#fff':'#555'}}/>
