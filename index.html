@@ -319,7 +319,7 @@ const useStore=(key,init)=>{
     try{const s=localStorage.getItem(key);return s?JSON.parse(s):init;}catch{return init;}
   });
 
-  // Hydrate from Supabase on first mount
+  // Hydrate from Supabase on first mount — MERGE with local, don't overwrite
   useEffect(()=>{
     if(!sbTable)return;
     (async()=>{
@@ -336,8 +336,14 @@ const useStore=(key,init)=>{
         }else{
           const rows=await sbFetch(sbTable);
           if(rows&&rows.length>0){
-            setData(rows);
-            localStorage.setItem(key,JSON.stringify(rows));
+            // MERGE: keep local items that Supabase doesn't have yet
+            // (items added locally but not yet synced to Supabase)
+            const local=JSON.parse(localStorage.getItem(key)||'[]');
+            const remoteIds=new Set(rows.map(r=>r.id));
+            const localOnly=(Array.isArray(local)?local:[]).filter(l=>!remoteIds.has(l.id));
+            const merged=[...rows,...localOnly];
+            setData(merged);
+            localStorage.setItem(key,JSON.stringify(merged));
           }
         }
       }catch(e){console.warn('Supabase hydrate failed:',key,e);}
@@ -1327,12 +1333,19 @@ const Vehicles=({db,onGoToRepairs})=>{
   const [repairs]=db.repairs;
   const [modal,setModal]=useState(null);
   const [insModal,setInsModal]=useState(null);
+  const [insDocPreview,setInsDocPreview]=useState(null);
   const [polisaPreview,setPolisaPreview]=useState(null);
   const [regDocPreview,setRegDocPreview]=useState(null);
   const [form,setForm]=useState({});
   const [insForm,setInsForm]=useState({});
   const [insFileLoading,setInsFileLoading]=useState(false);
   const [regDocsLoading,setRegDocsLoading]=useState(false);
+
+  // reg_docs stored separately to avoid Supabase overwrite
+  const [regDocsMap,setRegDocsMap]=useState(()=>{
+    try{return JSON.parse(localStorage.getItem('tm_reg_docs')||'{}');}catch{return {};}
+  });
+  const saveRegDocsMap=m=>{setRegDocsMap(m);localStorage.setItem('tm_reg_docs',JSON.stringify(m));};
 
   const addRegDoc=async(files,vehicleId)=>{
     setRegDocsLoading(true);
@@ -1347,13 +1360,21 @@ const Vehicles=({db,onGoToRepairs})=>{
           canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
           const data=canvas.toDataURL('image/jpeg',0.8);
           URL.revokeObjectURL(url);
-          setVehicles(p=>p.map(v=>v.id===vehicleId?{...v,reg_docs:[...(v.reg_docs||[]),{id:gid(),name:f.name,data}]}:v));
+          setRegDocsMap(prev=>{
+            const updated={...prev,[vehicleId]:[...(prev[vehicleId]||[]),{id:gid(),name:f.name,data}]};
+            localStorage.setItem('tm_reg_docs',JSON.stringify(updated));
+            return updated;
+          });
           remaining--;if(remaining===0)setRegDocsLoading(false);
         };img.src=url;
       }else{
         const rd=new FileReader();
         rd.onload=ev=>{
-          setVehicles(p=>p.map(v=>v.id===vehicleId?{...v,reg_docs:[...(v.reg_docs||[]),{id:gid(),name:f.name,data:ev.target.result}]}:v));
+          setRegDocsMap(prev=>{
+            const updated={...prev,[vehicleId]:[...(prev[vehicleId]||[]),{id:gid(),name:f.name,data:ev.target.result}]};
+            localStorage.setItem('tm_reg_docs',JSON.stringify(updated));
+            return updated;
+          });
           remaining--;if(remaining===0)setRegDocsLoading(false);
         };
         rd.onerror=()=>{remaining--;if(remaining===0)setRegDocsLoading(false);};
@@ -1362,7 +1383,13 @@ const Vehicles=({db,onGoToRepairs})=>{
     });
   };
 
-  const remRegDoc=(vehicleId,docId)=>setVehicles(p=>p.map(v=>v.id===vehicleId?{...v,reg_docs:(v.reg_docs||[]).filter(d=>d.id!==docId)}:v));
+  const remRegDoc=(vehicleId,docId)=>{
+    setRegDocsMap(prev=>{
+      const updated={...prev,[vehicleId]:(prev[vehicleId]||[]).filter(d=>d.id!==docId)};
+      localStorage.setItem('tm_reg_docs',JSON.stringify(updated));
+      return updated;
+    });
+  };
   const saveV=()=>{if(modal==='add')setVehicles(p=>[...p,{...form,id:gid()}]);else setVehicles(p=>p.map(x=>x.id===form.id?{...x,...form}:x));setModal(null)};
   const saveI=()=>{if(insModal==='add')setInsurance(p=>[...p,{...insForm,id:gid()}]);else setInsurance(p=>p.map(x=>x.id===insForm.id?{...x,...insForm}:x));setInsModal(null)};
   const F=(k,l,t='text')=><div><label style={C.lbl}>{l}</label><input style={C.inp} type={t} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/></div>;
@@ -1371,35 +1398,35 @@ const Vehicles=({db,onGoToRepairs})=>{
   const tL=t=>t==='oc'?'OC':t==='ac'?'AC':t==='oc_ac'?'OC/AC':'Przegląd';
   const getI=reg=>insurance.filter(i=>i.vehicle_reg===reg);
   const hInsFile=async e=>{
-    const file=e.target.files[0];if(!file)return;setInsFileLoading(true);
-    try{if(file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf')){
-      const buf=await file.arrayBuffer();
-      if(!window.pdfjsLib){await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';}
-      const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;const page=await pdf.getPage(1);const vp=page.getViewport({scale:1.5});const canvas=document.createElement('canvas');canvas.width=vp.width;canvas.height=vp.height;await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
-      setInsForm(p=>({...p,polisa_img:canvas.toDataURL('image/jpeg',0.85),polisa_name:file.name,polisa_type:'pdf'}));
-    }else{
-      // Compress image before storing (max 1200px wide, 0.75 quality)
-      const img=new Image();
-      const url=URL.createObjectURL(file);
-      img.onload=()=>{
-        const maxW=1200;
-        const scale=Math.min(1,maxW/img.width);
-        const canvas=document.createElement('canvas');
-        canvas.width=img.width*scale;canvas.height=img.height*scale;
-        canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
-        const compressed=canvas.toDataURL('image/jpeg',0.75);
-        URL.revokeObjectURL(url);
-        setInsForm(p=>({...p,polisa_img:compressed,polisa_name:file.name,polisa_type:'image'}));
-        setInsFileLoading(false);
-      };
-      img.src=url;
-      return; // loading flag cleared in onload
+    const files=Array.from(e.target.files);if(!files.length)return;setInsFileLoading(true);
+    let remaining=files.length;
+    const done=()=>{remaining--;if(remaining===0)setInsFileLoading(false);};
+    for(const file of files){
+      try{
+        if(file.type.startsWith('image/')){
+          const img=new Image();const url=URL.createObjectURL(file);
+          await new Promise(res=>{
+            img.onload=()=>{
+              const maxW=1200;const scale=Math.min(1,maxW/img.width);
+              const cv=document.createElement('canvas');cv.width=img.width*scale;cv.height=img.height*scale;
+              cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+              setInsForm(p=>({...p,polisa_docs:[...(p.polisa_docs||[]),{id:gid(),name:file.name,data:cv.toDataURL('image/jpeg',0.75)}]}));
+              URL.revokeObjectURL(url);res();
+            };
+            img.onerror=()=>{URL.revokeObjectURL(url);res();};
+            img.src=url;
+          });
+        }else{
+          const buf=await file.arrayBuffer();
+          if(!window.pdfjsLib){await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';}
+          const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;const page=await pdf.getPage(1);const vp=page.getViewport({scale:1.5});const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;await page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;
+          setInsForm(p=>({...p,polisa_docs:[...(p.polisa_docs||[]),{id:gid(),name:file.name,data:cv.toDataURL('image/jpeg',0.82)}]}));
+        }
+      }catch(err){console.error(err);}
     }
-    }catch(err){alert('Błąd: '+err.message);}
     setInsFileLoading(false);e.target.value='';
   };
   return(<div>
-    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}><h1 style={{fontSize:18,fontWeight:500,margin:0}}>Pojazdy i ubezpieczenia</h1><button style={C.btnP} onClick={()=>{setForm({});setModal('add')}}><i className="ti ti-plus"/> Dodaj pojazd</button></div>
     {vehicles.map(v=>{
       const vi=getI(v.registration);
       const oc=vi.find(i=>i.type==='oc'||i.type==='oc_ac'),ac=vi.find(i=>i.type==='ac'||i.type==='oc_ac'),tech=vi.find(i=>i.type==='przeglad');
@@ -1430,11 +1457,12 @@ const Vehicles=({db,onGoToRepairs})=>{
           {planned.map(r=><div key={r.id} style={{background:'#E6F1FB',border:'0.5px solid #B5D4F4',borderRadius:6,padding:'3px 8px',fontSize:10}}><span style={{fontWeight:500,color:'#185FA5'}}>{r.repair_type||'Naprawa'}</span><span style={{color:'#888',marginLeft:5}}>{r.date}</span></div>)}
         </div>}
 
-        {/* Reg docs */}
+        {/* Reg docs — stored in tm_reg_docs localStorage, independent of Supabase */}
+        {(()=>{const vDocs=(regDocsMap[v.id]||[]).length>0?regDocsMap[v.id]:(v.reg_docs||[]);return(
         <div style={{marginTop:7,borderTop:'0.5px solid rgba(0,0,0,0.07)',paddingTop:7}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
             <div style={{fontSize:9,fontWeight:500,color:'#888',textTransform:'uppercase',letterSpacing:'0.05em'}}>
-              Dowód rejestracyjny {v.reg_docs?.length?`(${v.reg_docs.length})` : ''}
+              Dowód rejestracyjny {vDocs.length?`(${vDocs.length})` : ''}
             </div>
             <div style={{display:'flex',gap:5}}>
               <label style={{...C.btn,fontSize:10,cursor:'pointer',position:'relative',overflow:'hidden'}}>
@@ -1447,9 +1475,9 @@ const Vehicles=({db,onGoToRepairs})=>{
               </label>
             </div>
           </div>
-          {v.reg_docs?.length>0
+          {vDocs.length>0
             ?<div style={{display:'flex',flexDirection:'column',gap:4}}>
-              {v.reg_docs.map(d=>(
+              {vDocs.map(d=>(
                 <div key={d.id} style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'4px 9px',fontSize:11}}>
                   <i className={d.data?.startsWith('data:image')?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
                   <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:11}}>{d.name}</span>
@@ -1460,7 +1488,7 @@ const Vehicles=({db,onGoToRepairs})=>{
             </div>
             :<div style={{fontSize:11,color:'#aaa'}}>Brak dokumentów.</div>
           }
-        </div>
+        </div>);})()}
       </div>);
     })}
     {vehicles.length===0&&<div style={{...C.card,textAlign:'center',padding:28,color:'#888',fontSize:11}}>Brak pojazdów.</div>}
@@ -1475,12 +1503,38 @@ const Vehicles=({db,onGoToRepairs})=>{
           <div style={C.stat}><div style={{fontSize:9,color:'#888'}}>Data od</div><div style={{fontWeight:500}}>{polisaPreview.start_date||'–'}</div></div>
           <div style={{...C.stat,background:iS(polisaPreview.expiry_date)?.c==='red'?'#FCEBEB':iS(polisaPreview.expiry_date)?.c==='amber'?'#FAEEDA':'#f5f4f0'}}><div style={{fontSize:9,color:'#888'}}>Ważna do</div><div style={{fontWeight:500}}>{polisaPreview.expiry_date||'–'}</div></div>
         </div>
-        {polisaPreview.polisa_img&&<div style={{marginTop:12}}><img src={polisaPreview.polisa_img} style={{width:'100%',borderRadius:7,border:'0.5px solid rgba(0,0,0,0.1)'}}/></div>}
+        {(()=>{
+          const docs=polisaPreview.polisa_docs||[];
+          const legacyImg=polisaPreview.polisa_img&&!docs.find(d=>d.data===polisaPreview.polisa_img)?[{id:'legacy',name:polisaPreview.polisa_name||'Dokument',data:polisaPreview.polisa_img}]:[];
+          const allDocs=[...legacyImg,...docs];
+          if(!allDocs.length)return null;
+          return<div style={{marginTop:12,borderTop:'0.5px solid rgba(0,0,0,0.08)',paddingTop:10}}>
+            <div style={{fontSize:10,fontWeight:500,color:'#888',marginBottom:6}}>Dokumenty ({allDocs.length})</div>
+            <div style={{display:'flex',flexDirection:'column',gap:5}}>
+              {allDocs.map(d=><div key={d.id} style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'5px 9px',fontSize:11}}>
+                <i className={d.data?.startsWith('data:image')?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5'}}/>
+                <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.name}</span>
+                <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setInsDocPreview(d)}><i className="ti ti-eye"/> Podgląd</button>
+              </div>)}
+            </div>
+          </div>;
+        })()}
         <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:12}}>
           <button style={{...C.btn,color:'#A32D2D'}} onClick={()=>{setInsurance(p=>p.filter(x=>x.id!==polisaPreview.id));setPolisaPreview(null)}}><i className="ti ti-trash"/> Usuń</button>
           <button style={C.btn} onClick={()=>{setInsForm(polisaPreview);setInsModal('edit');setPolisaPreview(null)}}><i className="ti ti-edit"/> Edytuj</button>
           <button style={C.btnP} onClick={()=>setPolisaPreview(null)}>Zamknij</button>
         </div>
+      </div>
+    </div>}
+    {insDocPreview&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10003}} onClick={()=>setInsDocPreview(null)}>
+      <div style={{background:'#fff',borderRadius:14,padding:14,maxWidth:760,width:'95%',maxHeight:'92vh',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+          <div style={{fontSize:13,fontWeight:500}}>{insDocPreview.name}</div>
+          <button style={{...C.btn,padding:'2px 6px'}} onClick={()=>setInsDocPreview(null)}><i className="ti ti-x"/></button>
+        </div>
+        {insDocPreview.data?.startsWith('data:image')
+          ?<img src={insDocPreview.data} style={{width:'100%',maxHeight:'80vh',objectFit:'contain',borderRadius:7}}/>
+          :<iframe src={insDocPreview.data} style={{width:'100%',height:'80vh',border:'none',borderRadius:7}}/>}
       </div>
     </div>}
     {regDocPreview&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10002}} onClick={()=>setRegDocPreview(null)}>
@@ -1566,13 +1620,36 @@ const Vehicles=({db,onGoToRepairs})=>{
         {FI('company','Firma')}{FI('policy_number','Nr polisy')}{FI('start_date','Data od','date')}{FI('expiry_date','Ważna do','date')}{FI('cost','Składka (zł)')}
       </div>
       <div style={{marginTop:12,borderTop:'0.5px solid rgba(0,0,0,0.08)',paddingTop:12}}>
-        <div style={C.secT}>Dokument polisy</div>
+        <div style={C.secT}>Dokumenty polisy ({(insForm.polisa_docs||[]).length+(insForm.polisa_img?1:0)})</div>
         <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'center',marginBottom:8}}>
-          <label style={{...C.btnP,cursor:'pointer',position:'relative',overflow:'hidden'}}>{insFileLoading?<><i className="ti ti-loader-2" style={{animation:'spin 1s linear infinite'}}/> Wczytywanie...</>:<><i className="ti ti-upload"/> Wgraj PDF/zdjęcie</>}<input type="file" accept=".pdf,application/pdf,image/*" onChange={hInsFile} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}} disabled={insFileLoading}/></label>
-          <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden'}}><i className="ti ti-camera"/> Zdjęcie<input type="file" accept="image/*" capture="environment" onChange={hInsFile} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}} disabled={insFileLoading}/></label>
-          {insForm.polisa_img&&<span style={{fontSize:11,color:'#3B6D11',display:'flex',alignItems:'center',gap:4}}><i className="ti ti-circle-check"/>{insForm.polisa_name}<button style={{...C.btn,padding:'1px 4px',marginLeft:4}} onClick={()=>setInsForm(p=>({...p,polisa_img:null,polisa_name:null}))}><i className="ti ti-trash"/></button></span>}
+          <label style={{...C.btnP,cursor:'pointer',position:'relative',overflow:'hidden'}}>
+            {insFileLoading?<><i className="ti ti-loader-2" style={{animation:'spin 1s linear infinite'}}/> Wczytywanie...</>:<><i className="ti ti-upload"/> Wgraj PDF/zdjęcie</>}
+            <input type="file" multiple accept=".pdf,application/pdf,image/*" onChange={hInsFile} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}} disabled={insFileLoading}/>
+          </label>
+          <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden'}}>
+            <i className="ti ti-camera"/> Zdjęcie
+            <input type="file" accept="image/*" capture="environment" onChange={hInsFile} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}} disabled={insFileLoading}/>
+          </label>
         </div>
-        {insForm.polisa_img&&<img src={insForm.polisa_img} style={{width:'100%',borderRadius:7,border:'0.5px solid rgba(0,0,0,0.1)',maxHeight:200,objectFit:'contain'}}/>}
+        {/* Legacy single polisa_img support */}
+        {insForm.polisa_img&&!(insForm.polisa_docs||[]).find(d=>d.data===insForm.polisa_img)&&(
+          <div style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'5px 9px',marginBottom:4,fontSize:11}}>
+            <i className={insForm.polisa_type==='image'?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
+            <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{insForm.polisa_name||'Dokument'}</span>
+            <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setInsDocPreview({data:insForm.polisa_img,name:insForm.polisa_name})}><i className="ti ti-eye"/></button>
+            <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setInsForm(p=>({...p,polisa_img:null,polisa_name:null,polisa_type:null}))}><i className="ti ti-trash"/></button>
+          </div>
+        )}
+        {/* Multi-docs */}
+        {(insForm.polisa_docs||[]).map(d=>(
+          <div key={d.id} style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'5px 9px',marginBottom:4,fontSize:11}}>
+            <i className={d.data?.startsWith('data:image')?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
+            <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.name}</span>
+            <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setInsDocPreview(d)}><i className="ti ti-eye"/></button>
+            <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setInsForm(p=>({...p,polisa_docs:p.polisa_docs.filter(x=>x.id!==d.id)}))}><i className="ti ti-trash"/></button>
+          </div>
+        ))}
+        {!(insForm.polisa_docs||[]).length&&!insForm.polisa_img&&<div style={{fontSize:11,color:'#aaa'}}>Brak dokumentów.</div>}
       </div>
       <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:12,position:'sticky',bottom:0,background:'#fff',paddingTop:10,paddingBottom:6,borderTop:'0.5px solid rgba(0,0,0,0.08)'}}><button style={C.btn} onClick={()=>setInsModal(null)}>Anuluj</button><button style={C.btnP} onClick={saveI}>Zapisz</button></div>
     </Modal>}
@@ -3986,6 +4063,14 @@ const Finanse=({db})=>{
   const [manualCat,setManualCat]=useState(false);
   const [pdfPreview,setPdfPreview]=useState(null);
   const [fileLoading,setFileLoading]=useState(false);
+  // Filters
+  const [fPaid,setFPaid]=useState('');       // ''|'paid'|'unpaid'
+  const [fKsef,setFKsef]=useState('');       // ''|'yes'|'no'
+  const [fCat,setFCat]=useState('');
+  const [fSearch,setFSearch]=useState('');   // search in seller/description/nr faktury
+  const [fAmtMin,setFAmtMin]=useState('');
+  const [fAmtMax,setFAmtMax]=useState('');
+  const [showFilters,setShowFilters]=useState(false);
 
   const addCat=()=>{const t=newCat.trim();if(!t||costCategories.includes(t))return;setCostCategories(p=>[...p,t]);setNewCat('')};
   const remCat=t=>{setCostCategories(p=>p.filter(x=>x!==t));if(form.category===t)setForm(p=>({...p,category:''}))};
@@ -4046,7 +4131,19 @@ const Finanse=({db})=>{
 
   // Costs filtered by tab and month
   const tabCosts=costs.filter(c=>(c.type||'realne')===costTab);
-  const monthCosts=tabCosts.filter(c=>(c.date||'').startsWith(selMonth));
+  const monthCosts=tabCosts.filter(c=>{
+    if(!(c.date||'').startsWith(selMonth))return false;
+    if(fPaid==='paid'&&!c.paid)return false;
+    if(fPaid==='unpaid'&&c.paid)return false;
+    if(fKsef==='yes'&&!c.ksef)return false;
+    if(fKsef==='no'&&c.ksef)return false;
+    if(fCat&&c.category!==fCat)return false;
+    if(fSearch){const q=fSearch.toLowerCase();if(!(c.seller||'').toLowerCase().includes(q)&&!(c.description||'').toLowerCase().includes(q)&&!(c.invoice_number||'').toLowerCase().includes(q))return false;}
+    if(fAmtMin&&parseFloat(c.amount_gross||0)<parseFloat(fAmtMin))return false;
+    if(fAmtMax&&parseFloat(c.amount_gross||0)>parseFloat(fAmtMax))return false;
+    return true;
+  });
+  const activeFilters=[fPaid,fKsef,fCat,fSearch,fAmtMin,fAmtMax].filter(Boolean).length;
   const totalCostsNet=monthCosts.reduce((s,c)=>{
     const amt=parseFloat(c.amount_net)||0;
     if((c.currency||'PLN')==='EUR')s.eur+=amt;else s.pln+=amt;
@@ -4159,6 +4256,34 @@ const Finanse=({db})=>{
           </div>
         </div>
       </div>
+      {/* Filter bar */}
+      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
+        <button style={{...C.btn,background:showFilters?'#1a1a18':'',color:showFilters?'#fff':'',position:'relative'}} onClick={()=>setShowFilters(p=>!p)}>
+          <i className="ti ti-filter"/> Filtry
+          {activeFilters>0&&<span style={{position:'absolute',top:-4,right:-4,width:16,height:16,borderRadius:'50%',background:'#A32D2D',color:'#fff',fontSize:9,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700}}>{activeFilters}</span>}
+        </button>
+        <input style={{...C.inp,flex:1,minWidth:140}} placeholder="Szukaj: sprzedawca, opis, nr faktury..." value={fSearch} onChange={e=>setFSearch(e.target.value)}/>
+        {activeFilters>0&&<button style={{...C.btn,fontSize:10,color:'#888'}} onClick={()=>{setFPaid('');setFKsef('');setFCat('');setFSearch('');setFAmtMin('');setFAmtMax('');}}><i className="ti ti-x"/> Wyczyść</button>}
+      </div>
+      {showFilters&&<div style={{background:'#f5f4f0',borderRadius:10,padding:'10px 12px',marginBottom:8,display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))',gap:8}}>
+        <div><label style={C.lbl}>Płatność</label><select style={C.inp} value={fPaid} onChange={e=>setFPaid(e.target.value)}>
+          <option value="">Wszystkie</option>
+          <option value="paid">✓ Zapłacone</option>
+          <option value="unpaid">✗ Niezapłacone</option>
+        </select></div>
+        <div><label style={C.lbl}>KSeF</label><select style={C.inp} value={fKsef} onChange={e=>setFKsef(e.target.value)}>
+          <option value="">Wszystkie</option>
+          <option value="yes">✓ W KSeF</option>
+          <option value="no">– Bez KSeF</option>
+        </select></div>
+        <div><label style={C.lbl}>Kategoria</label><select style={C.inp} value={fCat} onChange={e=>setFCat(e.target.value)}>
+          <option value="">Wszystkie</option>
+          {costCategories.map(c=><option key={c} value={c}>{c}</option>)}
+        </select></div>
+        <div><label style={C.lbl}>Kwota brutto od (zł)</label><input style={C.inp} type="number" step="0.01" value={fAmtMin} onChange={e=>setFAmtMin(e.target.value)} placeholder="np. 100"/></div>
+        <div><label style={C.lbl}>Kwota brutto do (zł)</label><input style={C.inp} type="number" step="0.01" value={fAmtMax} onChange={e=>setFAmtMax(e.target.value)} placeholder="np. 5000"/></div>
+      </div>}
+
       <table style={{width:'100%',borderCollapse:'collapse'}}>
         <thead><tr>{['Data','Kategoria','Sprzedawca','Nr faktury','Opis','Netto','Brutto',costTab==='księgowe'?'Rozliczenie':'Płatność','KSeF','PDF',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
         <tbody>{monthCosts.sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(c=>(<tr key={c.id}>
@@ -4168,7 +4293,7 @@ const Finanse=({db})=>{
           <td style={{...C.td,fontFamily:'monospace',fontSize:10}}>{c.invoice_number||'–'}</td>
           <td style={{...C.td,maxWidth:200}}><div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.description||'–'}</div></td>
           <td style={C.td}>{c.amount_net?`${parseFloat(c.amount_net).toFixed(2)} ${c.currency||'PLN'}`:'–'}</td>
-          <td style={C.td}><strong style={{color:'#A32D2D'}}>{parseFloat(c.amount_gross||0).toFixed(2)} {c.currency||'PLN'}</strong></td>
+          <td style={C.td}><strong>{parseFloat(c.amount_gross||0).toFixed(2)} {c.currency||'PLN'}</strong></td>
           <td style={C.td}><button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,paid:!x.paid}:x))} style={{...bdg(c.paid?'green':'red'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10}}>{costTab==='księgowe'?(c.paid?'✓ Rozliczony':'✗ Nierozliczony'):(c.paid?'✓ Zapłacony':'✗ Niezapłacony')}</button></td>
           <td style={C.td}><button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,ksef:!x.ksef}:x))} style={{...bdg(c.ksef?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10}}>{c.ksef?'✓ KSeF':'– KSeF'}</button></td>
           <td style={C.td}>{c.doc_file?<button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setPdfPreview({data:c.doc_file,name:c.doc_file_name})} title="Podgląd"><i className="ti ti-file-type-pdf"/></button>:<span style={{color:'#aaa',fontSize:10}}>–</span>}</td>
