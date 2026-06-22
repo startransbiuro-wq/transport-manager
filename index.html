@@ -318,10 +318,7 @@ const useStore=(key,init)=>{
   const [data,setData]=useState(()=>{
     try{const s=localStorage.getItem(key);return s?JSON.parse(s):init;}catch{return init;}
   });
-  const dataRef=React.useRef(data);
-  dataRef.current=data;
 
-  // Hydrate from Supabase on first mount — MERGE with local, don't overwrite
   useEffect(()=>{
     if(!sbTable)return;
     (async()=>{
@@ -331,26 +328,23 @@ const useStore=(key,init)=>{
           if(!r.ok)return;
           const rows=await r.json();
           if(rows.length>0){
-            const remote={...rows[0].data,_sbid:rows[0].id};
-            // Merge: local singleton wins for non-_sbid fields if local is newer
-            const local=dataRef.current;
-            const merged={...remote,...(local&&local._sbid===remote._sbid?local:{}),...{_sbid:remote._sbid}};
-            setData(merged);dataRef.current=merged;
+            const merged={...rows[0].data,_sbid:rows[0].id};
+            setData(merged);
             localStorage.setItem(key,JSON.stringify(merged));
           }
         }else{
           const rows=await sbFetch(sbTable);
-          if(rows&&rows.length>=0){
-            // MERGE: keep local items not yet in Supabase
-            const local=Array.isArray(dataRef.current)?dataRef.current:[];
+          if(rows&&rows.length>0){
+            // Merge: keep local items not yet in Supabase
+            const local=JSON.parse(localStorage.getItem(key)||'[]');
             const remoteIds=new Set(rows.map(r=>r.id));
-            const localOnly=local.filter(l=>l.id&&!remoteIds.has(l.id)&&!l._sbid);
-            const merged=[...rows,...localOnly];
-            setData(merged);dataRef.current=merged;
+            const localOnly=(Array.isArray(local)?local:[]).filter(l=>l.id&&!remoteIds.has(l.id));
+            const merged=localOnly.length>0?[...rows,...localOnly]:rows;
+            setData(merged);
             localStorage.setItem(key,JSON.stringify(merged));
-            // Immediately sync local-only items to Supabase
+            // Push unsynced local items to Supabase
             for(const item of localOnly){
-              try{await sbUpsert(sbTable,item);}catch(e){console.warn('sync local-only failed',e);}
+              sbUpsert(sbTable,item).catch(()=>{});
             }
           }
         }
@@ -359,44 +353,28 @@ const useStore=(key,init)=>{
   },[]);
 
   const set=v=>{
-    const n=typeof v==='function'?v(dataRef.current):v;
-    dataRef.current=n;
-    setData(n);
-    localStorage.setItem(key,JSON.stringify(n));
-
-    // Async sync to Supabase
-    if(!sbTable)return;
-    (async()=>{
-      try{
-        if(isSingleton){
-          const newSbid=await sbUpsertSingleton(sbTable,n);
-          if(newSbid&&!n._sbid){
-            const withId={...n,_sbid:newSbid};
-            dataRef.current=withId;setData(withId);
-            localStorage.setItem(key,JSON.stringify(withId));
-          }
-        }else{
-          const prev=Array.isArray(dataRef.current)?dataRef.current:[];
-          const prevMap=new Map(prev.map(i=>[i.id,i]));
-          const newMap=new Map((Array.isArray(n)?n:[]).map(i=>[i.id,i]));
-          for(const [id,item] of newMap){
-            const p=prevMap.get(id);
-            if(!p||JSON.stringify(p)!==JSON.stringify(item)){
-              const sbid=await sbUpsert(sbTable,item);
-              if(sbid&&!item._sbid){
-                const cur=dataRef.current;
-                const updated=(Array.isArray(cur)?cur:[]).map(x=>x.id===id?{...x,_sbid:sbid}:x);
-                dataRef.current=updated;setData(updated);
-                localStorage.setItem(key,JSON.stringify(updated));
-              }
+    setData(prev=>{
+      const n=typeof v==='function'?v(prev):v;
+      localStorage.setItem(key,JSON.stringify(n));
+      if(sbTable)(async()=>{
+        try{
+          if(isSingleton){
+            await sbUpsertSingleton(sbTable,n);
+          }else{
+            const prevMap=new Map((Array.isArray(prev)?prev:[]).map(i=>[i.id,i]));
+            const newArr=Array.isArray(n)?n:[];
+            for(const item of newArr){
+              const p=prevMap.get(item.id);
+              if(!p||JSON.stringify(p)!==JSON.stringify(item)) await sbUpsert(sbTable,item);
+            }
+            for(const old of (Array.isArray(prev)?prev:[])){
+              if(!newArr.find(x=>x.id===old.id)&&old._sbid) await sbDelete(sbTable,old._sbid);
             }
           }
-          for(const [id,item] of prevMap){
-            if(!newMap.has(id)&&item._sbid){await sbDelete(sbTable,item._sbid);}
-          }
-        }
-      }catch(e){console.warn('Supabase sync failed:',key,e);}
-    })();
+        }catch(e){console.warn('Supabase sync failed:',key,e);}
+      })();
+      return n;
+    });
   };
 
   return [data,set];
