@@ -1502,8 +1502,10 @@ const Vehicles=({db,onGoToRepairs})=>{
   const tL=t=>t==='oc'?'OC':t==='ac'?'AC':t==='oc_ac'?'OC/AC':'Przegląd';
   const getI=reg=>insurance.filter(i=>i.vehicle_reg===reg);
   const hInsFile=async e=>{
-    const files=Array.from(e.target.files);if(!files.length)return;setInsFileLoading(true);
-    const insId=insForm.id||insForm._tmpId||(insForm._tmpId=gid());
+    const files=Array.from(e.target.files);if(!files.length)return;
+    setInsFileLoading(true);
+    const insId=insForm.id||insForm._tmpId||gid();
+    if(!insForm._tmpId&&!insForm.id)setInsForm(p=>({...p,_tmpId:insId}));
     for(const file of files){
       try{
         let url;
@@ -1511,30 +1513,30 @@ const Vehicles=({db,onGoToRepairs})=>{
           const compressed=await compressImage(file,1200,0.75);
           url=await sbUploadBase64(compressed,file.name,`insurance/${insId}`);
         }else{
-          // PDF — upload directly to Storage
-          const safeName=`${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`;
-          const path=`insurance/${insId}/${safeName}`;
-          const r=await fetch(`${SB_STORAGE_URL}/object/${BUCKET}/${path}`,{
+          const safeName=String(Date.now())+'_'+file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+          const path='insurance/'+insId+'/'+safeName;
+          const r=await fetch(SB_STORAGE_URL+'/object/'+BUCKET+'/'+path,{
             method:'POST',
             headers:{...SB_STORAGE_HEADERS,'Content-Type':'application/pdf','x-upsert':'true'},
             body:file,
           });
           if(r.ok){
-            url=`${SB_STORAGE_URL}/object/public/${BUCKET}/${path}`;
+            url=SB_STORAGE_URL+'/object/public/'+BUCKET+'/'+path;
           }else{
             const err=await r.text();
-            console.error('PDF upload failed:',r.status,err);
-            alert(`Błąd wgrywania PDF: ${r.status} — ${err}`);
+            alert('Błąd wgrywania ('+r.status+'): '+err.slice(0,200));
           }
         }
         if(url){
           const doc={id:gid(),name:file.name,url,type:file.type.startsWith('image/')?'image':'pdf'};
           setInsForm(p=>({...p,polisa_docs:[...(p.polisa_docs||[]),doc],_tmpId:insId}));
+          setInsDocsMap(prev=>{
+            const updated={...prev,[insId]:[...(prev[insId]||[]),doc]};
+            try{localStorage.setItem('tm_ins_docs',JSON.stringify(updated));}catch(e){}
+            return updated;
+          });
         }
-      }catch(err){
-        console.error('hInsFile error:',err);
-        alert('Błąd: '+err.message);
-      }
+      }catch(err){alert('Błąd: '+err.message);}
     }
     setInsFileLoading(false);e.target.value='';
   };
@@ -1740,7 +1742,7 @@ const Vehicles=({db,onGoToRepairs})=>{
       <div style={{marginTop:12,borderTop:'0.5px solid rgba(0,0,0,0.08)',paddingTop:12}}>
         {(()=>{
           const insId=insForm.id||insForm._tmpId;
-          const docs=insDocsMap[insId]||[];
+          const docs=[...(insDocsMap[insId]||[]),(insForm.polisa_docs||[]).filter(d=>!(insDocsMap[insId]||[]).find(x=>x.id===d.id))];
           return(<>
             <div style={C.secT}>Dokumenty polisy ({docs.length})</div>
             <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'center',marginBottom:8}}>
