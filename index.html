@@ -374,10 +374,8 @@ const useStore=(key,init)=>{
   });
 
   // Hydrate from Supabase — merge with local unsynced items
-  // Skip on mobile: localStorage is source of truth on small devices
   useEffect(()=>{
     if(!sbTable)return;
-    if(/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent))return;
     (async()=>{
       try{
         if(isSingleton){
