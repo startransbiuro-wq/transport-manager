@@ -437,19 +437,21 @@ const useStore=(key,init)=>{
           const rows=await sbFetch(sbTable);
           if(!rows)return;
           const local=JSON.parse(localStorage.getItem(key)||'[]');
+          // Only keep local items that have NO _sbid (never synced to Supabase)
+          // Items with _sbid are fully managed by Supabase - trust remote state
+          const unsynced=(Array.isArray(local)?local:[]).filter(l=>l.id&&!l._sbid);
           const remoteIds=new Set(rows.map(r=>r.id));
-          // Keep local items not yet in Supabase (no _sbid or id not in remote)
-          const unsynced=(Array.isArray(local)?local:[]).filter(l=>l.id&&!remoteIds.has(l.id));
-          const merged=[...rows,...unsynced];
+          const trulyUnsynced=unsynced.filter(l=>!remoteIds.has(l.id));
+          const merged=[...rows,...trulyUnsynced];
           setData(merged);safeSetItem(key,JSON.stringify(merged));
-          // Push unsynced to Supabase and update _sbid
-          if(unsynced.length>0){
+          // Push unsynced to Supabase
+          if(trulyUnsynced.length>0){
             const withIds=[...merged];
-            for(let i=0;i<unsynced.length;i++){
+            for(let i=0;i<trulyUnsynced.length;i++){
               try{
-                const sbid=await sbUpsert(sbTable,unsynced[i]);
+                const sbid=await sbUpsert(sbTable,trulyUnsynced[i]);
                 if(sbid){
-                  const idx=withIds.findIndex(x=>x.id===unsynced[i].id);
+                  const idx=withIds.findIndex(x=>x.id===trulyUnsynced[i].id);
                   if(idx>=0)withIds[idx]={...withIds[idx],_sbid:sbid};
                 }
               }catch(e){}
@@ -1509,13 +1511,30 @@ const Vehicles=({db,onGoToRepairs})=>{
           const compressed=await compressImage(file,1200,0.75);
           url=await sbUploadBase64(compressed,file.name,`insurance/${insId}`);
         }else{
-          url=await sbUploadFile(file,`insurance/${insId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`);
+          // PDF — upload directly to Storage
+          const safeName=`${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`;
+          const path=`insurance/${insId}/${safeName}`;
+          const r=await fetch(`${SB_STORAGE_URL}/object/${BUCKET}/${path}`,{
+            method:'POST',
+            headers:{...SB_STORAGE_HEADERS,'Content-Type':'application/pdf','x-upsert':'true'},
+            body:file,
+          });
+          if(r.ok){
+            url=`${SB_STORAGE_URL}/object/public/${BUCKET}/${path}`;
+          }else{
+            const err=await r.text();
+            console.error('PDF upload failed:',r.status,err);
+            alert(`Błąd wgrywania PDF: ${r.status} — ${err}`);
+          }
         }
         if(url){
           const doc={id:gid(),name:file.name,url,type:file.type.startsWith('image/')?'image':'pdf'};
           setInsForm(p=>({...p,polisa_docs:[...(p.polisa_docs||[]),doc],_tmpId:insId}));
         }
-      }catch(err){console.error('hInsFile error:',err);}
+      }catch(err){
+        console.error('hInsFile error:',err);
+        alert('Błąd: '+err.message);
+      }
     }
     setInsFileLoading(false);e.target.value='';
   };
