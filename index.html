@@ -5357,7 +5357,27 @@ function App(){
     </main>
   </div>);
 }
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+class ErrorBoundary extends React.Component{
+  constructor(p){super(p);this.state={err:null};}
+  static getDerivedStateFromError(e){return{err:e};}
+  componentDidCatch(e,info){console.error('React error:',e,info);}
+  render(){
+    if(this.state.err){
+      return React.createElement('div',{style:{padding:24,background:'#FCEBEB',color:'#A32D2D',borderRadius:12,margin:20,fontFamily:'sans-serif'}},
+        React.createElement('strong',null,'Błąd aplikacji: '),
+        React.createElement('br',null),
+        React.createElement('code',{style:{fontSize:12,whiteSpace:'pre-wrap',wordBreak:'break-all'}},
+          this.state.err.message+'\n\n'+this.state.err.stack?.slice(0,500)
+        ),
+        React.createElement('br',null),
+        React.createElement('button',{onClick:()=>this.setState({err:null}),style:{marginTop:12,padding:'8px 16px',cursor:'pointer',borderRadius:6,border:'none',background:'#A32D2D',color:'#fff'}},'Spróbuj ponownie')
+      );
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(ErrorBoundary,null,React.createElement(App)));
 
 
 
