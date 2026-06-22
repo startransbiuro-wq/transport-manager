@@ -308,9 +308,63 @@ const sbUpsertSingleton=async(table,obj)=>{
   }
 };
 
-// ─── HYBRID STORE HOOK ────────────────────────────────────────────────────────
-// Loads from localStorage instantly, then hydrates from Supabase on mount.
-// Writes go to both localStorage and Supabase.
+// Safe localStorage write — if quota exceeded, strip large image fields and retry
+const safeSetItem=(key,value)=>{
+  try{
+    localStorage.setItem(key,value);
+  }catch(e){
+    if(e.name==='QuotaExceededError'||e.code===22||e.code===1014){
+      try{
+        const data=JSON.parse(value);
+        const stripped=Array.isArray(data)?data.map(item=>{
+          const s={...item};
+          ['polisa_img','polisa_docs','reg_docs','cmr_docs','docs','photos','invoice_img','order_pdf_page1','doc_file'].forEach(k=>{
+            if(s[k]&&typeof s[k]==='string'&&s[k].length>5000)s[k]=null;
+            if(Array.isArray(s[k]))s[k]=[];
+          });
+          return s;
+        }):data;
+        localStorage.setItem(key,JSON.stringify(stripped));
+        console.warn('localStorage quota: stripped images from',key);
+      }catch(e2){
+        try{localStorage.removeItem(key);}catch(e3){}
+        console.warn('localStorage quota: cleared',key);
+      }
+    }
+  }
+};
+
+// On startup: aggressively strip ALL base64 images from localStorage to free space
+// Images are stored in Supabase - we only need metadata locally
+(()=>{
+  const STRIP_KEYS=['tm_vehicles','tm_insurance','tm_drivers','tm_repairs','tm_fines','tm_costs','tm_orders','tm_invoices','tm_trips'];
+  const IMAGE_FIELDS=['polisa_img','polisa_docs','reg_docs','cmr_docs','docs','documents','photos','workPermitDocs','invoice_img','order_pdf_page1','doc_file','data'];
+  let freed=false;
+  STRIP_KEYS.forEach(key=>{
+    try{
+      const raw=localStorage.getItem(key);
+      if(!raw)return;
+      const arr=JSON.parse(raw);
+      if(!Array.isArray(arr))return;
+      const cleaned=arr.map(item=>{
+        if(!item||typeof item!=='object')return item;
+        const s={...item};
+        IMAGE_FIELDS.forEach(f=>{
+          if(f==='data')return; // don't strip 'data' at top level - could be non-image
+          if(typeof s[f]==='string'&&s[f].startsWith('data:')&&s[f].length>1000){
+            s[f]=null;freed=true;
+          }
+          if(Array.isArray(s[f])&&s[f].some(d=>d&&typeof d==='object'&&typeof d.data==='string'&&d.data.startsWith('data:')&&d.data.length>1000)){
+            s[f]=s[f].map(d=>({...d,data:null}));freed=true;
+          }
+        });
+        return s;
+      });
+      localStorage.setItem(key,JSON.stringify(cleaned));
+    }catch(e){}
+  });
+  if(freed)console.log('Freed localStorage space by removing cached images');
+})();
 const useStore=(key,init)=>{
   const sbTable=SB_TABLE[key];
   const isSingleton=SB_SINGLETON.has(key);
@@ -330,7 +384,7 @@ const useStore=(key,init)=>{
           const rows=await r.json();
           if(rows.length>0){
             const merged={...rows[0].data,_sbid:rows[0].id};
-            setData(merged);localStorage.setItem(key,JSON.stringify(merged));
+            setData(merged);safeSetItem(key,JSON.stringify(merged));
           }
         }else{
           const rows=await sbFetch(sbTable);
@@ -340,7 +394,7 @@ const useStore=(key,init)=>{
           // Keep local items not yet in Supabase (no _sbid or id not in remote)
           const unsynced=(Array.isArray(local)?local:[]).filter(l=>l.id&&!remoteIds.has(l.id));
           const merged=[...rows,...unsynced];
-          setData(merged);localStorage.setItem(key,JSON.stringify(merged));
+          setData(merged);safeSetItem(key,JSON.stringify(merged));
           // Push unsynced to Supabase and update _sbid
           if(unsynced.length>0){
             const withIds=[...merged];
@@ -353,7 +407,7 @@ const useStore=(key,init)=>{
                 }
               }catch(e){}
             }
-            setData(withIds);localStorage.setItem(key,JSON.stringify(withIds));
+            setData(withIds);safeSetItem(key,JSON.stringify(withIds));
           }
         }
       }catch(e){console.warn('hydrate failed:',key,e);}
@@ -364,7 +418,7 @@ const useStore=(key,init)=>{
     setData(prev=>{
       const n=typeof v==='function'?v(prev):v;
       // Write to localStorage immediately
-      localStorage.setItem(key,JSON.stringify(n));
+      safeSetItem(key,JSON.stringify(n));
       // Sync to Supabase in background
       if(sbTable)(async()=>{
         try{
@@ -385,7 +439,7 @@ const useStore=(key,init)=>{
                     // Update _sbid in localStorage
                     const cur=JSON.parse(localStorage.getItem(key)||'[]');
                     const upd=(Array.isArray(cur)?cur:[]).map(x=>x.id===item.id?{...x,_sbid:sbid}:x);
-                    localStorage.setItem(key,JSON.stringify(upd));
+                    safeSetItem(key,JSON.stringify(upd));
                     setData(upd);
                   }
                 }catch(e){}
@@ -1342,6 +1396,9 @@ const Vehicles=({db,onGoToRepairs})=>{
   const [insDocPreview,setInsDocPreview]=useState(null);
   const [polisaPreview,setPolisaPreview]=useState(null);
   const [regDocPreview,setRegDocPreview]=useState(null);
+  // Insurance docs stored separately to avoid localStorage quota issues
+  const [insDocsMap,setInsDocsMap]=useState(()=>{try{return JSON.parse(localStorage.getItem('tm_ins_docs')||'{}');}catch{return{};}});
+  const saveInsDocsMap=m=>{setInsDocsMap(m);try{localStorage.setItem('tm_ins_docs',JSON.stringify(m));}catch(e){}};
   const [form,setForm]=useState({});
   const [insForm,setInsForm]=useState({});
   const [insFileLoading,setInsFileLoading]=useState(false);
@@ -1397,7 +1454,22 @@ const Vehicles=({db,onGoToRepairs})=>{
     });
   };
   const saveV=()=>{if(modal==='add')setVehicles(p=>[...p,{...form,id:gid()}]);else setVehicles(p=>p.map(x=>x.id===form.id?{...x,...form}:x));setModal(null)};
-  const saveI=()=>{if(insModal==='add')setInsurance(p=>[...p,{...insForm,id:gid()}]);else setInsurance(p=>p.map(x=>x.id===insForm.id?{...x,...insForm}:x));setInsModal(null)};
+  const saveI=()=>{
+    if(insModal==='add'){
+      const newId=gid();
+      const tmpId=insForm._tmpId;
+      setInsurance(p=>[...p,{...insForm,id:newId,_tmpId:undefined}]);
+      // Migrate docs from tmpId to newId
+      if(tmpId&&insDocsMap[tmpId]){
+        const updated={...insDocsMap,[newId]:insDocsMap[tmpId]};
+        delete updated[tmpId];
+        saveInsDocsMap(updated);
+      }
+    }else{
+      setInsurance(p=>p.map(x=>x.id===insForm.id?{...x,...insForm,_tmpId:undefined}:x));
+    }
+    setInsModal(null);
+  };
   const F=(k,l,t='text')=><div><label style={C.lbl}>{l}</label><input style={C.inp} type={t} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/></div>;
   const FI=(k,l,t='text')=><div><label style={C.lbl}>{l}</label><input style={C.inp} type={t} value={insForm[k]||''} onChange={e=>setInsForm(p=>({...p,[k]:e.target.value}))}/></div>;
   const iS=exp=>{const d=daysUntil(exp);if(d===null)return null;if(d<0)return{l:'Wygasłe',c:'red'};if(d<=7)return{l:`${d}d`,c:'red'};if(d<=30)return{l:`${d}d`,c:'amber'};return{l:'OK',c:'green'}};
@@ -1405,28 +1477,34 @@ const Vehicles=({db,onGoToRepairs})=>{
   const getI=reg=>insurance.filter(i=>i.vehicle_reg===reg);
   const hInsFile=async e=>{
     const files=Array.from(e.target.files);if(!files.length)return;setInsFileLoading(true);
-    let remaining=files.length;
-    const done=()=>{remaining--;if(remaining===0)setInsFileLoading(false);};
+    const insId=insForm.id||insForm._tmpId||(insForm._tmpId=gid());
     for(const file of files){
       try{
+        let data;
         if(file.type.startsWith('image/')){
-          const img=new Image();const url=URL.createObjectURL(file);
-          await new Promise(res=>{
+          data=await new Promise(res=>{
+            const img=new Image();const url=URL.createObjectURL(file);
             img.onload=()=>{
               const maxW=1200;const scale=Math.min(1,maxW/img.width);
               const cv=document.createElement('canvas');cv.width=img.width*scale;cv.height=img.height*scale;
               cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-              setInsForm(p=>({...p,polisa_docs:[...(p.polisa_docs||[]),{id:gid(),name:file.name,data:cv.toDataURL('image/jpeg',0.75)}]}));
-              URL.revokeObjectURL(url);res();
-            };
-            img.onerror=()=>{URL.revokeObjectURL(url);res();};
-            img.src=url;
+              URL.revokeObjectURL(url);res(cv.toDataURL('image/jpeg',0.75));
+            };img.onerror=()=>{URL.revokeObjectURL(url);res(null);};img.src=url;
           });
         }else{
-          const buf=await file.arrayBuffer();
           if(!window.pdfjsLib){await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';}
+          const buf=await file.arrayBuffer();
           const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;const page=await pdf.getPage(1);const vp=page.getViewport({scale:1.5});const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;await page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;
-          setInsForm(p=>({...p,polisa_docs:[...(p.polisa_docs||[]),{id:gid(),name:file.name,data:cv.toDataURL('image/jpeg',0.82)}]}));
+          data=cv.toDataURL('image/jpeg',0.82);
+        }
+        if(data){
+          const doc={id:gid(),name:file.name,data};
+          setInsDocsMap(prev=>{
+            const updated={...prev,[insId]:[...(prev[insId]||[]),doc]};
+            try{localStorage.setItem('tm_ins_docs',JSON.stringify(updated));}catch(e){}
+            return updated;
+          });
+          setInsForm(p=>({...p,_tmpId:insId}));
         }
       }catch(err){console.error(err);}
     }
@@ -1510,7 +1588,7 @@ const Vehicles=({db,onGoToRepairs})=>{
           <div style={{...C.stat,background:iS(polisaPreview.expiry_date)?.c==='red'?'#FCEBEB':iS(polisaPreview.expiry_date)?.c==='amber'?'#FAEEDA':'#f5f4f0'}}><div style={{fontSize:9,color:'#888'}}>Ważna do</div><div style={{fontWeight:500}}>{polisaPreview.expiry_date||'–'}</div></div>
         </div>
         {(()=>{
-          const docs=polisaPreview.polisa_docs||[];
+          const docs=insDocsMap[polisaPreview.id]||polisaPreview.polisa_docs||[];
           const legacyImg=polisaPreview.polisa_img&&!docs.find(d=>d.data===polisaPreview.polisa_img)?[{id:'legacy',name:polisaPreview.polisa_name||'Dokument',data:polisaPreview.polisa_img}]:[];
           const allDocs=[...legacyImg,...docs];
           if(!allDocs.length)return null;
@@ -1626,36 +1704,34 @@ const Vehicles=({db,onGoToRepairs})=>{
         {FI('company','Firma')}{FI('policy_number','Nr polisy')}{FI('start_date','Data od','date')}{FI('expiry_date','Ważna do','date')}{FI('cost','Składka (zł)')}
       </div>
       <div style={{marginTop:12,borderTop:'0.5px solid rgba(0,0,0,0.08)',paddingTop:12}}>
-        <div style={C.secT}>Dokumenty polisy ({(insForm.polisa_docs||[]).length+(insForm.polisa_img?1:0)})</div>
-        <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'center',marginBottom:8}}>
-          <label style={{...C.btnP,cursor:'pointer',position:'relative',overflow:'hidden'}}>
-            {insFileLoading?<><i className="ti ti-loader-2" style={{animation:'spin 1s linear infinite'}}/> Wczytywanie...</>:<><i className="ti ti-upload"/> Wgraj PDF/zdjęcie</>}
-            <input type="file" multiple accept=".pdf,application/pdf,image/*" onChange={hInsFile} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}} disabled={insFileLoading}/>
-          </label>
-          <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden'}}>
-            <i className="ti ti-camera"/> Zdjęcie
-            <input type="file" accept="image/*" capture="environment" onChange={hInsFile} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}} disabled={insFileLoading}/>
-          </label>
-        </div>
-        {/* Legacy single polisa_img support */}
-        {insForm.polisa_img&&!(insForm.polisa_docs||[]).find(d=>d.data===insForm.polisa_img)&&(
-          <div style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'5px 9px',marginBottom:4,fontSize:11}}>
-            <i className={insForm.polisa_type==='image'?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
-            <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{insForm.polisa_name||'Dokument'}</span>
-            <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setInsDocPreview({data:insForm.polisa_img,name:insForm.polisa_name})}><i className="ti ti-eye"/></button>
-            <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setInsForm(p=>({...p,polisa_img:null,polisa_name:null,polisa_type:null}))}><i className="ti ti-trash"/></button>
-          </div>
-        )}
-        {/* Multi-docs */}
-        {(insForm.polisa_docs||[]).map(d=>(
-          <div key={d.id} style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'5px 9px',marginBottom:4,fontSize:11}}>
-            <i className={d.data?.startsWith('data:image')?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
-            <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.name}</span>
-            <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setInsDocPreview(d)}><i className="ti ti-eye"/></button>
-            <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setInsForm(p=>({...p,polisa_docs:p.polisa_docs.filter(x=>x.id!==d.id)}))}><i className="ti ti-trash"/></button>
-          </div>
-        ))}
-        {!(insForm.polisa_docs||[]).length&&!insForm.polisa_img&&<div style={{fontSize:11,color:'#aaa'}}>Brak dokumentów.</div>}
+        {(()=>{
+          const insId=insForm.id||insForm._tmpId;
+          const docs=insDocsMap[insId]||[];
+          return(<>
+            <div style={C.secT}>Dokumenty polisy ({docs.length})</div>
+            <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'center',marginBottom:8}}>
+              <label style={{...C.btnP,cursor:'pointer',position:'relative',overflow:'hidden'}}>
+                {insFileLoading?<><i className="ti ti-loader-2" style={{animation:'spin 1s linear infinite'}}/> Wczytywanie...</>:<><i className="ti ti-upload"/> Wgraj PDF/zdjęcie</>}
+                <input type="file" multiple accept=".pdf,application/pdf,image/*" onChange={hInsFile} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}} disabled={insFileLoading}/>
+              </label>
+              <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden'}}>
+                <i className="ti ti-camera"/> Zdjęcie
+                <input type="file" accept="image/*" capture="environment" onChange={hInsFile} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}} disabled={insFileLoading}/>
+              </label>
+            </div>
+            {docs.map(d=>(
+              <div key={d.id} style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'5px 9px',marginBottom:4,fontSize:11}}>
+                <i className={d.data?.startsWith('data:image')?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
+                <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.name}</span>
+                <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setInsDocPreview(d)}><i className="ti ti-eye"/></button>
+                <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{
+                  saveInsDocsMap({...insDocsMap,[insId]:docs.filter(x=>x.id!==d.id)});
+                }}><i className="ti ti-trash"/></button>
+              </div>
+            ))}
+            {!docs.length&&<div style={{fontSize:11,color:'#aaa'}}>Brak dokumentów.</div>}
+          </>);
+        })()}
       </div>
       <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:12,position:'sticky',bottom:0,background:'#fff',paddingTop:10,paddingBottom:6,borderTop:'0.5px solid rgba(0,0,0,0.08)'}}><button style={C.btn} onClick={()=>setInsModal(null)}>Anuluj</button><button style={C.btnP} onClick={saveI}>Zapisz</button></div>
     </Modal>}
