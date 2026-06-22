@@ -431,34 +431,16 @@ const useStore=(key,init)=>{
             for(const item of newArr){
               const old=prevMap.get(item.id);
               if(!old||JSON.stringify(old)!==JSON.stringify(item)){
-                const r=await fetch(`${SB_URL}/rest/v1/${sbTable}`,{
-                  method:'POST',
-                  headers:{...SB_HEADERS,'Prefer':'return=representation'},
-                  body:JSON.stringify({data:{...item,_sbid:undefined}}),
-                });
-                if(r.ok){
-                  const rows=await r.json();
-                  const sbid=rows?.[0]?.id;
-                  if(sbid){
-                    setData(cur=>{
-                      const upd=(Array.isArray(cur)?cur:[]).map(x=>x.id===item.id?{...x,_sbid:sbid}:x);
-                      safeSetItem(key,JSON.stringify(upd));
-                      return upd;
-                    });
-                  }
-                }else{
-                  const txt=await r.text();
-                  console.error('Supabase POST failed:',r.status,txt);
-                }
+                await sbUpsert(sbTable,item);
               }
             }
             for(const old of prevArr){
               if(!newArr.find(x=>x.id===old.id)&&old._sbid){
-                fetch(`${SB_URL}/rest/v1/${sbTable}?id=eq.${old._sbid}`,{method:'DELETE',headers:SB_HEADERS}).catch(()=>{});
+                sbDelete(sbTable,old._sbid).catch(()=>{});
               }
             }
           }
-        }catch(e){console.error('sync error:',key,e.message);}
+        }catch(e){console.error('sync:',key,e.message);}
       })();
       return n;
     });
@@ -5284,6 +5266,36 @@ function App(){
     fetch(`${SB_URL}/rest/v1/orders?select=id&limit=1`,{headers:SB_HEADERS})
       .then(r=>setSbStatus(r.ok?'ok':'error'))
       .catch(()=>setSbStatus('error'));
+
+    // On startup: push all local items without _sbid to Supabase
+    const SYNC_KEYS={
+      tm_costs:'costs',tm_orders:'orders',tm_invoices:'invoices',
+      tm_trips:'trips',tm_fines:'fines',tm_drivers:'drivers',
+      tm_vehicles:'vehicles',tm_insurance:'insurance',tm_repairs:'repairs',
+      tm_contractors:'contractors',tm_payroll:'payroll',tm_todos:'todos',
+    };
+    (async()=>{
+      await new Promise(r=>setTimeout(r,2000)); // wait for app to load
+      for(const[lsKey,table] of Object.entries(SYNC_KEYS)){
+        try{
+          const raw=localStorage.getItem(lsKey);
+          if(!raw)continue;
+          const items=JSON.parse(raw);
+          if(!Array.isArray(items))continue;
+          const unsynced=items.filter(x=>x&&x.id&&!x._sbid);
+          for(const item of unsynced){
+            try{
+              const sbid=await sbUpsert(table,item);
+              if(sbid){
+                const cur=JSON.parse(localStorage.getItem(lsKey)||'[]');
+                const upd=cur.map(x=>x.id===item.id?{...x,_sbid:sbid}:x);
+                safeSetItem(lsKey,JSON.stringify(upd));
+              }
+            }catch(e){console.warn('startup sync failed:',table,item.id,e.message);}
+          }
+        }catch(e){}
+      }
+    })();
     // Refresh profile for existing session
     if(currentUser?.session?.user?.id&&!currentUser.profile){
       sbGetProfile(currentUser.session.user.id,currentUser.session.access_token).then(p=>{
