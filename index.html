@@ -242,7 +242,54 @@ const fetchPdfFirstPage=async url=>{
 // ─── SUPABASE CONFIG ──────────────────────────────────────────────────────────
 const SB_URL='https://kykwfzjpkhrmsiovxlae.supabase.co';
 const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt5a3dmempwa2hybXNpb3Z4bGFlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2OTY1NzMsImV4cCI6MjA5NzI3MjU3M30.tlFy0eMAS5g-XHFeugYGKyAPl-qhlotGyX_DXLCRcpc';
+const SB_STORAGE_URL=`${SB_URL}/storage/v1`;
+const SB_STORAGE_HEADERS={'apikey':SB_KEY,'Authorization':`Bearer ${SB_KEY}`};
+const BUCKET='tm-files';
+
 const SB_HEADERS={'Content-Type':'application/json','apikey':SB_KEY,'Authorization':`Bearer ${SB_KEY}`};
+const sbUploadFile=async(file,path)=>{
+  const r=await fetch(`${SB_STORAGE_URL}/object/${BUCKET}/${path}`,{
+    method:'POST',
+    headers:{...SB_STORAGE_HEADERS,'Content-Type':file.type||'application/octet-stream','x-upsert':'true'},
+    body:file,
+  });
+  if(!r.ok){const t=await r.text();console.error('Storage upload failed:',t);return null;}
+  return `${SB_STORAGE_URL}/object/public/${BUCKET}/${path}`;
+};
+
+// Upload base64 data URL to Supabase Storage
+const sbUploadBase64=async(dataUrl,filename,folder)=>{
+  if(!dataUrl||!dataUrl.startsWith('data:'))return null;
+  const [meta,b64]=dataUrl.split(',');
+  const mime=meta.match(/:(.*?);/)?.[1]||'image/jpeg';
+  const bytes=atob(b64);
+  const arr=new Uint8Array(bytes.length);
+  for(let i=0;i<bytes.length;i++)arr[i]=bytes.charCodeAt(i);
+  const blob=new Blob([arr],{type:mime});
+  const path=`${folder}/${Date.now()}_${filename.replace(/[^a-zA-Z0-9._-]/g,'_')}`;
+  return sbUploadFile(blob,path);
+};
+
+// Delete file from Supabase Storage
+const sbDeleteFile=async(url)=>{
+  if(!url||!url.includes(BUCKET))return;
+  const path=url.split(`${BUCKET}/`)[1];
+  if(!path)return;
+  await fetch(`${SB_STORAGE_URL}/object/${BUCKET}/${path}`,{
+    method:'DELETE',headers:SB_STORAGE_HEADERS,
+  });
+};
+
+// Convert image file to compressed base64 (for preview only)
+const compressImage=async(file,maxW=900,quality=0.65)=>new Promise(res=>{
+  const img=new Image();const url=URL.createObjectURL(file);
+  img.onload=()=>{
+    const scale=Math.min(1,maxW/img.width);
+    const cv=document.createElement('canvas');cv.width=img.width*scale;cv.height=img.height*scale;
+    cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+    URL.revokeObjectURL(url);res(cv.toDataURL('image/jpeg',quality));
+  };img.onerror=()=>{URL.revokeObjectURL(url);res(null);};img.src=url;
+});
 
 // Map localStorage key → Supabase table name
 const SB_TABLE={
@@ -426,11 +473,22 @@ const useStore=(key,init)=>{
             const prevArr=Array.isArray(prev)?prev:[];
             const newArr=Array.isArray(n)?n:[];
             const prevMap=new Map(prevArr.map(x=>[x.id,x]));
-            for(const item of newArr){
+            let changed=false;
+            const withSbids=[...newArr];
+            for(let i=0;i<withSbids.length;i++){
+              const item=withSbids[i];
               const old=prevMap.get(item.id);
               if(!old||JSON.stringify(old)!==JSON.stringify(item)){
-                await sbUpsert(sbTable,item);
+                const sbid=await sbUpsert(sbTable,item);
+                if(sbid&&!item._sbid){
+                  withSbids[i]={...item,_sbid:sbid};
+                  changed=true;
+                }
               }
+            }
+            if(changed){
+              safeSetItem(key,JSON.stringify(withSbids));
+              setData(withSbids);
             }
             for(const old of prevArr){
               if(!newArr.find(x=>x.id===old.id)&&old._sbid){
@@ -1400,42 +1458,30 @@ const Vehicles=({db,onGoToRepairs})=>{
 
   const addRegDoc=async(files,vehicleId)=>{
     setRegDocsLoading(true);
-    const list=Array.from(files);
-    let done=0;
-    list.forEach(f=>{
-      const compress=(data)=>{
-        done++;
-        // Save directly to vehicle — this triggers Supabase sync via setVehicles
-        setVehicles(p=>p.map(v=>v.id===vehicleId
-          ?{...v,reg_docs:[...(v.reg_docs||[]),{id:gid(),name:f.name,data}]}
-          :v));
-        // Also update local map for immediate display
-        setRegDocsMap(prev=>({...prev,[vehicleId]:[...(prev[vehicleId]||[]),{id:gid(),name:f.name,data}]}));
-        if(done===list.length)setRegDocsLoading(false);
-      };
-      if(f.type.startsWith('image/')){
-        const img=new Image();const url=URL.createObjectURL(f);
-        img.onload=()=>{
-          const maxW=900;const scale=Math.min(1,maxW/img.width);
-          const cv=document.createElement('canvas');cv.width=img.width*scale;cv.height=img.height*scale;
-          cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-          URL.revokeObjectURL(url);compress(cv.toDataURL('image/jpeg',0.65));
-        };img.onerror=()=>{URL.revokeObjectURL(url);done++;if(done===list.length)setRegDocsLoading(false);};
-        img.src=url;
-      }else{
-        const rd=new FileReader();
-        rd.onload=ev=>compress(ev.target.result);
-        rd.onerror=()=>{done++;if(done===list.length)setRegDocsLoading(false);};
-        rd.readAsDataURL(f);
-      }
-    });
+    for(const f of Array.from(files)){
+      try{
+        let url;
+        if(f.type.startsWith('image/')){
+          // Compress then upload to Storage
+          const compressed=await compressImage(f,1200,0.75);
+          url=await sbUploadBase64(compressed,f.name,`reg_docs/${vehicleId}`);
+        }else{
+          url=await sbUploadFile(f,`reg_docs/${vehicleId}/${Date.now()}_${f.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`);
+        }
+        if(url){
+          const doc={id:gid(),name:f.name,url,type:f.type.startsWith('image/')?'image':'pdf'};
+          setVehicles(p=>p.map(v=>v.id===vehicleId?{...v,reg_docs:[...(v.reg_docs||[]),doc]}:v));
+        }
+      }catch(e){console.error('addRegDoc error:',e);}
+    }
+    setRegDocsLoading(false);
   };
 
-  const remRegDoc=(vehicleId,docId)=>{
+  const remRegDoc=async(vehicleId,docId,url)=>{
+    if(url)sbDeleteFile(url).catch(()=>{});
     setVehicles(p=>p.map(v=>v.id===vehicleId
       ?{...v,reg_docs:(v.reg_docs||[]).filter(d=>d.id!==docId)}
       :v));
-    setRegDocsMap(prev=>({...prev,[vehicleId]:(prev[vehicleId]||[]).filter(d=>d.id!==docId)}));
   };
   const saveV=()=>{if(modal==='add')setVehicles(p=>[...p,{...form,id:gid()}]);else setVehicles(p=>p.map(x=>x.id===form.id?{...x,...form}:x));setModal(null)};
   const saveI=()=>{
@@ -1458,36 +1504,18 @@ const Vehicles=({db,onGoToRepairs})=>{
     const insId=insForm.id||insForm._tmpId||(insForm._tmpId=gid());
     for(const file of files){
       try{
-        let data;
+        let url;
         if(file.type.startsWith('image/')){
-          data=await new Promise(res=>{
-            const img=new Image();const url=URL.createObjectURL(file);
-            img.onload=()=>{
-              const maxW=1200;const scale=Math.min(1,maxW/img.width);
-              const cv=document.createElement('canvas');cv.width=img.width*scale;cv.height=img.height*scale;
-              cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
-              URL.revokeObjectURL(url);res(cv.toDataURL('image/jpeg',0.75));
-            };img.onerror=()=>{URL.revokeObjectURL(url);res(null);};img.src=url;
-          });
+          const compressed=await compressImage(file,1200,0.75);
+          url=await sbUploadBase64(compressed,file.name,`insurance/${insId}`);
         }else{
-          if(!window.pdfjsLib){await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';}
-          const buf=await file.arrayBuffer();
-          const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;const page=await pdf.getPage(1);const vp=page.getViewport({scale:1.5});const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;await page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;
-          data=cv.toDataURL('image/jpeg',0.82);
+          url=await sbUploadFile(file,`insurance/${insId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`);
         }
-        if(data){
-          const doc={id:gid(),name:file.name,data};
-          // Save to insDocsMap for display AND to insForm for Supabase sync via saveI
-          setInsDocsMap(prev=>{
-            const insId=insForm.id||insForm._tmpId;
-            const updated={...prev,[insId]:[...(prev[insId]||[]),doc]};
-            try{localStorage.setItem('tm_ins_docs',JSON.stringify(updated));}catch(e){}
-            return updated;
-          });
-          // Also update insForm.polisa_docs so it gets saved to Supabase when user clicks Zapisz
-          setInsForm(p=>({...p,polisa_docs:[...(p.polisa_docs||[]),doc],_tmpId:p._tmpId||p.id||gid()}));
+        if(url){
+          const doc={id:gid(),name:file.name,url,type:file.type.startsWith('image/')?'image':'pdf'};
+          setInsForm(p=>({...p,polisa_docs:[...(p.polisa_docs||[]),doc],_tmpId:insId}));
         }
-      }catch(err){console.error(err);}
+      }catch(err){console.error('hInsFile error:',err);}
     }
     setInsFileLoading(false);e.target.value='';
   };
@@ -1544,10 +1572,10 @@ const Vehicles=({db,onGoToRepairs})=>{
             ?<div style={{display:'flex',flexDirection:'column',gap:4}}>
               {vDocs.map(d=>(
                 <div key={d.id} style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'4px 9px',fontSize:11}}>
-                  <i className={d.data?.startsWith('data:image')?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
+                  <i className={d.type==='image'||['jpg','jpeg','png','webp'].some(e=>d.url?.toLowerCase().includes('.'+e))?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
                   <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:11}}>{d.name}</span>
-                  <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setRegDocPreview(d)}><i className="ti ti-eye"/></button>
-                  <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>remRegDoc(v.id,d.id)}><i className="ti ti-trash"/></button>
+                  <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setRegDocPreview({...d,src:d.url||d.data})}><i className="ti ti-eye"/></button>
+                  <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>remRegDoc(v.id,d.id,d.url)}><i className="ti ti-trash"/></button>
                 </div>
               ))}
             </div>
@@ -1577,7 +1605,7 @@ const Vehicles=({db,onGoToRepairs})=>{
             <div style={{fontSize:10,fontWeight:500,color:'#888',marginBottom:6}}>Dokumenty ({allDocs.length})</div>
             <div style={{display:'flex',flexDirection:'column',gap:5}}>
               {allDocs.map(d=><div key={d.id} style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'5px 9px',fontSize:11}}>
-                <i className={d.data?.startsWith('data:image')?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5'}}/>
+                <i className={d.type==='image'||['jpg','jpeg','png'].some(e=>d.url?.toLowerCase().includes('.'+e))?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5'}}/>
                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.name}</span>
                 <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setInsDocPreview(d)}><i className="ti ti-eye"/> Podgląd</button>
               </div>)}
@@ -1597,9 +1625,12 @@ const Vehicles=({db,onGoToRepairs})=>{
           <div style={{fontSize:13,fontWeight:500}}>{insDocPreview.name}</div>
           <button style={{...C.btn,padding:'2px 6px'}} onClick={()=>setInsDocPreview(null)}><i className="ti ti-x"/></button>
         </div>
-        {insDocPreview.data?.startsWith('data:image')
-          ?<img src={insDocPreview.data} style={{width:'100%',maxHeight:'80vh',objectFit:'contain',borderRadius:7}}/>
-          :<iframe src={insDocPreview.data} style={{width:'100%',height:'80vh',border:'none',borderRadius:7}}/>}
+        {(()=>{
+          const src=insDocPreview.url||insDocPreview.data;
+          const isImg=insDocPreview.type==='image'||['jpg','jpeg','png','webp'].some(e=>src?.toLowerCase().includes('.'+e))||src?.startsWith('data:image');
+          if(isImg)return<img src={src} style={{width:'100%',maxHeight:'80vh',objectFit:'contain',borderRadius:7}}/>;
+          return<iframe src={src} style={{width:'100%',height:'80vh',border:'none',borderRadius:7}}/>;
+        })()}
       </div>
     </div>}
     {regDocPreview&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10002}} onClick={()=>setRegDocPreview(null)}>
@@ -1608,9 +1639,12 @@ const Vehicles=({db,onGoToRepairs})=>{
           <div style={{fontSize:13,fontWeight:500}}>{regDocPreview.name}</div>
           <button style={{...C.btn,padding:'2px 6px'}} onClick={()=>setRegDocPreview(null)}><i className="ti ti-x"/></button>
         </div>
-        {regDocPreview.data?.startsWith('data:image')
-          ?<img src={regDocPreview.data} style={{width:'100%',maxHeight:'80vh',objectFit:'contain',borderRadius:7}}/>
-          :<iframe src={regDocPreview.data} style={{width:'100%',height:'80vh',border:'none',borderRadius:7}}/>}
+        {(()=>{
+          const src=regDocPreview.src||regDocPreview.url||regDocPreview.data;
+          const isImg=regDocPreview.type==='image'||['jpg','jpeg','png','webp'].some(e=>src?.toLowerCase().includes('.'+e))||src?.startsWith('data:image');
+          if(isImg)return<img src={src} style={{width:'100%',maxHeight:'80vh',objectFit:'contain',borderRadius:7}}/>;
+          return<iframe src={src} style={{width:'100%',height:'80vh',border:'none',borderRadius:7}}/>;
+        })()}
       </div>
     </div>}
     {modal&&modal!=='tech'&&<Modal title={modal==='add'?'Dodaj pojazd':'Edytuj pojazd'} onClose={()=>setModal(null)}>
@@ -1702,11 +1736,13 @@ const Vehicles=({db,onGoToRepairs})=>{
             </div>
             {docs.map(d=>(
               <div key={d.id} style={{display:'flex',gap:7,alignItems:'center',background:'#f5f4f0',borderRadius:6,padding:'5px 9px',marginBottom:4,fontSize:11}}>
-                <i className={d.data?.startsWith('data:image')?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
+                <i className={d.type==='image'||['jpg','jpeg','png'].some(e=>d.url?.toLowerCase().includes('.'+e))?'ti ti-photo':'ti ti-file-type-pdf'} style={{color:'#185FA5',fontSize:13}}/>
                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.name}</span>
                 <button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setInsDocPreview(d)}><i className="ti ti-eye"/></button>
                 <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{
+                  if(d.url)sbDeleteFile(d.url).catch(()=>{});
                   saveInsDocsMap({...insDocsMap,[insId]:docs.filter(x=>x.id!==d.id)});
+                  setInsForm(p=>({...p,polisa_docs:(p.polisa_docs||[]).filter(x=>x.id!==d.id)}));
                 }}><i className="ti ti-trash"/></button>
               </div>
             ))}
