@@ -2535,33 +2535,26 @@ const sendToKSeF=async(inv,company,settings)=>{
   if(!token)throw new Error('Brak tokenu KSeF. Uzupełnij w Ustawieniach → KSeF.');
   if(!nip)throw new Error('Brak NIP sprzedawcy. Uzupełnij w Danych firmy.');
 
-  // KSeF 2.0: InitToken — wysyłamy token bezpośrednio (bez szyfrowania RSA)
-  const sessionData=await ksefCall('/online/Session/InitToken',{
-    contextIdentifier:{type:'onip',identifier:nip},
-    credentials:{token},
+  // KSeF 2.0: Uwierzytelnienie tokenem → accessToken JWT
+  const authData=await ksefCall('/auth/ksef-token',{
+    context:{type:'onip',identifier:nip},
+    token,
   },null,env);
+  const accessToken=authData?.accessToken||authData?.token;
+  if(!accessToken)throw new Error(`Błąd uwierzytelnienia: ${JSON.stringify(authData).slice(0,200)}`);
 
-  const sessionToken=sessionData?.sessionToken?.token||sessionData?.token;
-  if(!sessionToken)throw new Error(`Błąd sesji: ${JSON.stringify(sessionData).slice(0,200)}`);
-
-  // Prepare XML and Base64
+  // Prepare XML FA(3) and encode as Base64
   const xml=generateKSeFXML(inv,company);
   const b64=btoa(unescape(encodeURIComponent(xml)));
-  const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(xml));
-  const hashB64=btoa(String.fromCharCode(...new Uint8Array(hash)));
 
-  // Send invoice
-  const sendData=await ksefCall('/online/Invoice/Send',{
-    invoiceHash:{hashSHA:{algorithm:'SHA-256',encoding:'Base64',value:hashB64},fileSize:xml.length},
-    invoicePayload:{type:'plain',invoiceBody:b64},
-  },sessionToken,env);
+  // KSeF 2.0: Wysyłka faktury
+  const sendData=await ksefCall('/invoices',{
+    invoiceBody:b64,
+    type:'FA',
+  },accessToken,env);
 
-  const refNo=sendData?.elementReferenceNumber;
-
-  // Terminate session
-  ksefCall('/online/Session/Terminate',null,sessionToken,env,'GET').catch(()=>{});
-
-  return{refNo,xml,sessionToken};
+  const refNo=sendData?.ksefReferenceNumber||sendData?.referenceNumber||sendData?.elementReferenceNumber;
+  return{refNo,xml};
 };
 
 const Invoices=({db,pendingInvoice,onClearPending,openPreviewId,onPreviewOpened})=>{
