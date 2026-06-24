@@ -2385,11 +2385,16 @@ const KSEF_PROXY=`${SB_URL}/functions/v1/ksef-proxy`;
 const ksefCall=async(path,body,token,env)=>{
   const r=await fetch(KSEF_PROXY,{
     method:'POST',
-    headers:{...SB_HEADERS},
+    headers:{
+      'Content-Type':'application/json',
+      'Authorization':`Bearer ${SB_KEY}`,
+      'apikey':SB_KEY,
+    },
     body:JSON.stringify({env:env||'test',path,method:'POST',body,token}),
   });
+  if(!r.ok){const t=await r.text();throw new Error(`Edge Function error ${r.status}: ${t.slice(0,200)}`);}
   const res=await r.json();
-  if(!res.ok)throw new Error(`KSeF ${res.status}: ${JSON.stringify(res.data)}`);
+  if(!res.ok)throw new Error(`KSeF ${res.status}: ${JSON.stringify(res.data).slice(0,200)}`);
   return res.data;
 };
 
