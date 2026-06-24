@@ -2582,6 +2582,13 @@ const Invoices=({db,pendingInvoice,onClearPending,openPreviewId,onPreviewOpened}
     const sd=pendingInvoice.unload_date||pendingInvoice.load_date||today();
     setEurRate(null);setEurOverride('');
     const desc=`Zlecenie transportowe TZa ${pendingInvoice.order_number||pendingInvoice.number||''}`.trim();
+    // Find contractor to get address
+    const clientNip=(pendingInvoice.client_nip||'').replace(/[^0-9]/g,'');
+    const contractor=contractors.find(c=>(c.nip||'').replace(/[^0-9]/g,'')===clientNip&&clientNip)||
+                     contractors.find(c=>c.name===pendingInvoice.client_name);
+    const buyerAddr=contractor
+      ?[contractor.address,contractor.zip_city||contractor.city].filter(Boolean).join(', ')
+      :'';
     setForm({
       currency:'EUR',
       issue_date:today(),
@@ -2594,7 +2601,7 @@ const Invoices=({db,pendingInvoice,onClearPending,openPreviewId,onPreviewOpened}
       seller_bank:company.bank_account_eur||company.bank_account||'',
       buyer_name:pendingInvoice.client_name||'',
       buyer_nip:pendingInvoice.client_nip||'',
-      buyer_address:'',
+      buyer_address:buyerAddr,
       _from_order:pendingInvoice.number,
     });
     setItems([{description:desc,qty:1,price:pendingInvoice.rate||'',vat:'23'}]);
