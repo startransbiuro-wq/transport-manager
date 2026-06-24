@@ -2527,37 +2527,39 @@ const generateKSeFXML=(inv,company)=>{
 </fa:Faktura>`;
 };
 
-// Send invoice to KSeF 1.0 via Supabase Edge Function proxy
+// Send invoice to KSeF 2.0 via Supabase Edge Function proxy
 const sendToKSeF=async(inv,company,settings)=>{
-  const env=settings.ksef_env==='prod'?'prod':'test';
+  const env=settings.ksef_env||'prod';
   const nip=(inv.seller_nip||company?.nip||'').replace(/[^0-9]/g,'');
   const token=settings.ksef_token||'';
   if(!token)throw new Error('Brak tokenu KSeF. Uzupełnij w Ustawieniach → KSeF.');
   if(!nip)throw new Error('Brak NIP sprzedawcy. Uzupełnij w Danych firmy.');
 
-  // 1. Initiate session with token
+  // KSeF 2.0: InitToken — wysyłamy token bezpośrednio (bez szyfrowania RSA)
   const sessionData=await ksefCall('/online/Session/InitToken',{
     contextIdentifier:{type:'onip',identifier:nip},
     credentials:{token},
   },null,env);
-  const sessionToken=sessionData.sessionToken?.token||sessionData.token;
-  if(!sessionToken)throw new Error(`Błąd sesji KSeF: ${JSON.stringify(sessionData).slice(0,200)}`);
 
-  // 2. Prepare XML and encode as Base64
+  const sessionToken=sessionData?.sessionToken?.token||sessionData?.token;
+  if(!sessionToken)throw new Error(`Błąd sesji: ${JSON.stringify(sessionData).slice(0,200)}`);
+
+  // Prepare XML and Base64
   const xml=generateKSeFXML(inv,company);
   const b64=btoa(unescape(encodeURIComponent(xml)));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(xml));
   const hashB64=btoa(String.fromCharCode(...new Uint8Array(hash)));
 
-  // 3. Send invoice
+  // Send invoice
   const sendData=await ksefCall('/online/Invoice/Send',{
     invoiceHash:{hashSHA:{algorithm:'SHA-256',encoding:'Base64',value:hashB64},fileSize:xml.length},
     invoicePayload:{type:'plain',invoiceBody:b64},
   },sessionToken,env);
-  const refNo=sendData.elementReferenceNumber;
 
-  // 4. Terminate session
-  ksefCall('/online/Session/Terminate',{},sessionToken,env,'GET').catch(()=>{});
+  const refNo=sendData?.elementReferenceNumber;
+
+  // Terminate session
+  ksefCall('/online/Session/Terminate',null,sessionToken,env,'GET').catch(()=>{});
 
   return{refNo,xml,sessionToken};
 };
@@ -4560,8 +4562,9 @@ const Settings=({db})=>{
       <div style={C.g2}>
         <div><label style={C.lbl}>Środowisko KSeF</label>
           <select style={C.inp} value={loc.ksef_env||'test'} onChange={e=>setLoc(p=>({...p,ksef_env:e.target.value}))}>
-            <option value="test">Demo/testowe (ksef-demo.mf.gov.pl)</option>
-            <option value="prod">Produkcyjne (ap.ksef.mf.gov.pl)</option>
+            <option value="prod">Produkcyjne — api.ksef.mf.gov.pl</option>
+            <option value="demo">Demo — api-demo.ksef.mf.gov.pl</option>
+            <option value="test">Testowe — api-test.ksef.mf.gov.pl</option>
           </select>
           {loc.ksef_env==='prod'&&<div style={{fontSize:10,color:'#A32D2D',marginTop:3}}><i className="ti ti-alert-triangle"/> Środowisko produkcyjne — faktury trafią do urzędu skarbowego</div>}
         </div>
