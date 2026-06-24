@@ -2381,9 +2381,16 @@ const Orders=({db,onCreateInvoice,onOpenInvoicePreview})=>{
 
 
 // ─── KSEF HELPERS ─────────────────────────────────────────────────────────────
-const KSEF_ENV={
-  prod:'https://ksef.mf.gov.pl/api',
-  test:'https://ksef-demo.mf.gov.pl/api',
+const KSEF_PROXY=`${SB_URL}/functions/v1/ksef-proxy`;
+const ksefCall=async(path,body,token,env)=>{
+  const r=await fetch(KSEF_PROXY,{
+    method:'POST',
+    headers:{...SB_HEADERS},
+    body:JSON.stringify({env:env||'test',path,method:'POST',body,token}),
+  });
+  const res=await r.json();
+  if(!res.ok)throw new Error(`KSeF ${res.status}: ${JSON.stringify(res.data)}`);
+  return res.data;
 };
 
 const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -2519,52 +2526,37 @@ const generateKSeFXML=(inv,company)=>{
 </fa:Faktura>`;
 };
 
-// Send invoice to KSeF — returns {refNo} or throws
+// Send invoice to KSeF via Supabase Edge Function proxy
 const sendToKSeF=async(inv,company,settings)=>{
-  const env=settings.ksef_env==='prod'?KSEF_ENV.prod:KSEF_ENV.test;
+  const env=settings.ksef_env==='prod'?'prod':'test';
   const nip=(inv.seller_nip||company?.nip||'').replace(/[^0-9]/g,'');
   const token=settings.ksef_token||'';
   if(!token)throw new Error('Brak tokenu KSeF. Uzupełnij w Ustawieniach → KSeF.');
   if(!nip)throw new Error('Brak NIP sprzedawcy. Uzupełnij w Danych firmy.');
 
   // 1. Initiate session
-  const sessionRes=await fetch(`${env}/online/Session/InitToken`,{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      contextIdentifier:{type:'onip',identifier:nip},
-      credentials:{token},
-    }),
-  });
-  if(!sessionRes.ok){const t=await sessionRes.text();throw new Error(`Błąd inicjacji sesji (${sessionRes.status}): ${t}`);}
-  const sessionData=await sessionRes.json();
+  const sessionData=await ksefCall('/online/Session/InitToken',{
+    contextIdentifier:{type:'onip',identifier:nip},
+    credentials:{token},
+  },null,env);
   const sessionToken=sessionData.sessionToken?.token||sessionData.token;
   if(!sessionToken)throw new Error('Nie otrzymano tokenu sesji KSeF.');
 
-  // 2. Prepare XML and encode as Base64
+  // 2. Prepare XML
   const xml=generateKSeFXML(inv,company);
   const b64=btoa(unescape(encodeURIComponent(xml)));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(xml));
   const hashB64=btoa(String.fromCharCode(...new Uint8Array(hash)));
 
   // 3. Send invoice
-  const sendRes=await fetch(`${env}/online/Invoice/Send`,{
-    method:'POST',
-    headers:{'Content-Type':'application/json','SessionToken':sessionToken},
-    body:JSON.stringify({
-      invoiceHash:{hashSHA:{algorithm:'SHA-256',encoding:'Base64',value:hashB64},fileSize:xml.length},
-      invoicePayload:{type:'plain',invoiceBody:b64},
-    }),
-  });
-  if(!sendRes.ok){const t=await sendRes.text();throw new Error(`Błąd wysyłki faktury (${sendRes.status}): ${t}`);}
-  const sendData=await sendRes.json();
+  const sendData=await ksefCall('/online/Invoice/Send',{
+    invoiceHash:{hashSHA:{algorithm:'SHA-256',encoding:'Base64',value:hashB64},fileSize:xml.length},
+    invoicePayload:{type:'plain',invoiceBody:b64},
+  },sessionToken,env);
   const refNo=sendData.elementReferenceNumber;
 
   // 4. Terminate session
-  await fetch(`${env}/online/Session/Terminate`,{
-    method:'GET',
-    headers:{'SessionToken':sessionToken},
-  }).catch(()=>{});
+  ksefCall('/online/Session/Terminate',{},sessionToken,env).catch(()=>{});
 
   return{refNo,xml,sessionToken};
 };
