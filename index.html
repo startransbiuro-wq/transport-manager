@@ -2382,19 +2382,15 @@ const Orders=({db,onCreateInvoice,onOpenInvoicePreview})=>{
 
 // ─── KSEF HELPERS ─────────────────────────────────────────────────────────────
 const KSEF_PROXY=`${SB_URL}/functions/v1/ksef-proxy`;
-const ksefCall=async(path,body,token,env)=>{
+const ksefCall=async(path,body,token,env,method='POST')=>{
   const r=await fetch(KSEF_PROXY,{
     method:'POST',
-    headers:{
-      'Content-Type':'application/json',
-      'Authorization':`Bearer ${SB_KEY}`,
-      'apikey':SB_KEY,
-    },
-    body:JSON.stringify({env:env||'test',path,method:'POST',body,token}),
+    headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},
+    body:JSON.stringify({env:env||'test',path,method,body,token}),
   });
-  if(!r.ok){const t=await r.text();throw new Error(`Edge Function error ${r.status}: ${t.slice(0,200)}`);}
+  if(!r.ok){const t=await r.text();throw new Error(`Edge Function error ${r.status}: ${t.slice(0,300)}`);}
   const res=await r.json();
-  if(!res.ok)throw new Error(`KSeF ${res.status}: ${JSON.stringify(res.data).slice(0,200)}`);
+  if(!res.ok)throw new Error(`KSeF ${res.status}: ${JSON.stringify(res.data).slice(0,300)}`);
   return res.data;
 };
 
@@ -2531,7 +2527,7 @@ const generateKSeFXML=(inv,company)=>{
 </fa:Faktura>`;
 };
 
-// Send invoice to KSeF via Supabase Edge Function proxy
+// Send invoice to KSeF 1.0 via Supabase Edge Function proxy
 const sendToKSeF=async(inv,company,settings)=>{
   const env=settings.ksef_env==='prod'?'prod':'test';
   const nip=(inv.seller_nip||company?.nip||'').replace(/[^0-9]/g,'');
@@ -2539,15 +2535,15 @@ const sendToKSeF=async(inv,company,settings)=>{
   if(!token)throw new Error('Brak tokenu KSeF. Uzupełnij w Ustawieniach → KSeF.');
   if(!nip)throw new Error('Brak NIP sprzedawcy. Uzupełnij w Danych firmy.');
 
-  // 1. Initiate session
+  // 1. Initiate session with token
   const sessionData=await ksefCall('/online/Session/InitToken',{
     contextIdentifier:{type:'onip',identifier:nip},
     credentials:{token},
   },null,env);
   const sessionToken=sessionData.sessionToken?.token||sessionData.token;
-  if(!sessionToken)throw new Error('Nie otrzymano tokenu sesji KSeF.');
+  if(!sessionToken)throw new Error(`Błąd sesji KSeF: ${JSON.stringify(sessionData).slice(0,200)}`);
 
-  // 2. Prepare XML
+  // 2. Prepare XML and encode as Base64
   const xml=generateKSeFXML(inv,company);
   const b64=btoa(unescape(encodeURIComponent(xml)));
   const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(xml));
@@ -2561,7 +2557,7 @@ const sendToKSeF=async(inv,company,settings)=>{
   const refNo=sendData.elementReferenceNumber;
 
   // 4. Terminate session
-  ksefCall('/online/Session/Terminate',{},sessionToken,env).catch(()=>{});
+  ksefCall('/online/Session/Terminate',{},sessionToken,env,'GET').catch(()=>{});
 
   return{refNo,xml,sessionToken};
 };
@@ -4564,8 +4560,8 @@ const Settings=({db})=>{
       <div style={C.g2}>
         <div><label style={C.lbl}>Środowisko KSeF</label>
           <select style={C.inp} value={loc.ksef_env||'test'} onChange={e=>setLoc(p=>({...p,ksef_env:e.target.value}))}>
-            <option value="test">Testowe (ksef-demo.mf.gov.pl)</option>
-            <option value="prod">Produkcyjne (ksef.mf.gov.pl)</option>
+            <option value="test">Demo/testowe (ksef-demo.mf.gov.pl)</option>
+            <option value="prod">Produkcyjne (ap.ksef.mf.gov.pl)</option>
           </select>
           {loc.ksef_env==='prod'&&<div style={{fontSize:10,color:'#A32D2D',marginTop:3}}><i className="ti ti-alert-triangle"/> Środowisko produkcyjne — faktury trafią do urzędu skarbowego</div>}
         </div>
