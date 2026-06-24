@@ -1780,6 +1780,8 @@ const Vehicles=({db,onGoToRepairs})=>{
 
 
 const DEFAULT_REPAIR_TYPES=['Silnik','Hamulce','Zawieszenie','Elektryk','Klimatyzacja','Oleje/płyny','Opony','Karoseria','Inne'];
+const DEFAULT_EQUIP=['Gaśnica','Kamizelka odblaskowa','Trójkąt ostrzegawczy','Apteczka','Liny/pasy','Kliny pod koła','Łańcuchy śniegowe','Tarcza tachografu','Karta kierowcy','Dowód rejestracyjny','OC','CMR'];
+const DEFAULT_TECH_ITEMS=['Klocki hamulcowe','Opony (zużycie)','Olej silnikowy','Płyn chłodniczy','Płyn hamulcowy','Pasy/liny','Oświetlenie','Wycieraczki','Akumulator','Sprzęgło'];
 const Repairs=({db,initialFilter,onFilterApplied})=>{
   const [repairs,setRepairs]=db.repairs;
   const [vehicles]=db.vehicles;
@@ -1996,8 +1998,25 @@ const Orders=({db,onCreateInvoice,onOpenInvoicePreview})=>{
       {anyOrderFilter&&<div style={{marginTop:6,fontSize:10,color:'#888'}}>Wyniki: <strong style={{color:'#1a1a18'}}>{filtered.length}</strong> z {orders.length}</div>}
     </div>
     <div style={C.card}><table style={{width:'100%',borderCollapse:'collapse'}}>
-      <thead><tr>{['Nr zlecenia','Załadunek (adres)','Rozładunek (adres)','Załadunek','Rozładunek','Kierowca','Pojazd','km','Stawka','PDF',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
-      <tbody>{filtered.map(o=>(<tr key={o.id}>
+      <thead><tr>{['Nr zlecenia','Załadunek (adres)','Rozładunek (adres)','Załadunek','Rozładunek','Kierowca','Pojazd','km','Stawka','Zysk PLN','PDF',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
+      <tbody>{filtered.map(o=>{
+        const freight=parseFloat(o.rate)||0;
+        const highway=parseFloat(o.rate_highway)||0;
+        const parking=parseFloat(o.rate_parking)||0;
+        const extrasSum=(o.extras||[]).reduce((s,e)=>s+(parseFloat(e.amount)||0),0);
+        const km=parseFloat(o.kilometers)||0;
+        const cons=parseFloat(settings.fuel_consumption)||0;
+        const fp=parseFloat(settings.fuel_price_eur)||0;
+        const fuelEUR=km>0&&cons>0&&fp>0?(km/100*cons*fp):0;
+        const refDate=o.load_date||today();
+        const mTrip=trips.find(t=>t.vehicle_reg===o.vehicle_reg&&t.start_date&&t.start_date<=refDate&&(!t.end_date||t.end_date>=refDate));
+        const dr=parseFloat(mTrip?.daily_rate)||0;
+        const days=(()=>{if(!o.load_date)return null;const end=o.unload_date?new Date(o.unload_date):null;if(!end)return 1;return Math.max(1,Math.round((end-new Date(o.load_date))/86400000));})();
+        const driverCost=days&&dr?days*dr:0;
+        const er=parseFloat(settings.eur_rate)||0;
+        const profitEUR=freight-highway-parking-extrasSum-fuelEUR;
+        const profitPLN=er>0?profitEUR*er-driverCost:null;
+        return(<tr key={o.id}>
         <td style={C.td}><strong style={{fontWeight:500}}>{o.order_number||o.number}</strong>{(()=>{const linkedInv=invoices.find(inv=>o.number&&inv._from_order===o.number);return linkedInv?<span style={{...bdg('green'),marginLeft:6}}>Zafakturowane: {linkedInv.number}{linkedInv.delivery_date&&<span title={`Data doręczenia: ${linkedInv.delivery_date}`} style={{display:'inline-block',width:7,height:7,borderRadius:'50%',background:'#EF9F27',marginLeft:5,verticalAlign:'middle'}}/>}</span>:null;})()}</td>
         <td style={{...C.td,maxWidth:120}}><div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={o.load_address}>{o.load_address||'–'}</div></td>
         <td style={{...C.td,maxWidth:120}}><div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={o.unload_address}>{o.unload_address||'–'}</div></td>
@@ -2005,6 +2024,7 @@ const Orders=({db,onCreateInvoice,onOpenInvoicePreview})=>{
         <td style={C.td}>{o.driver_name}</td><td style={C.td}>{o.vehicle_reg}</td>
         <td style={C.td}>{o.kilometers?`${o.kilometers}km`:'–'}</td>
         <td style={C.td}>{o.rate?`${o.rate} ${o.currency||'EUR'}`:'–'}</td>
+        <td style={{...C.td,fontWeight:600,color:profitPLN===null?'#aaa':profitPLN>=0?'#3B6D11':'#A32D2D'}}>{profitPLN===null?'–':`${profitPLN>=0?'+':''}${profitPLN.toFixed(0)} zł`}</td>
         <td style={C.td}>{o.order_pdf_page1?<button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setPdfPreview({img:o.order_pdf_page1,name:o.order_pdf_name,pages:o.order_pdf_pages})}><i className="ti ti-file-type-pdf"/></button>:<span style={{color:'#aaa',fontSize:10}}>–</span>}</td>
         <td style={C.td}>{(()=>{const linkedInv=invoices.find(inv=>o.number&&inv._from_order===o.number);return linkedInv?<button style={{...C.btn,padding:'2px 5px',color:'#185FA5',marginRight:3}} title="Podgląd / wydruk faktury" onClick={()=>onOpenInvoicePreview&&onOpenInvoicePreview(linkedInv.id)}><i className="ti ti-file-invoice"/></button>:null;})()}<button style={{...C.btn,padding:'2px 5px',color:'#3B6D11'}} title="Wystaw fakturę z tego zlecenia" onClick={()=>onCreateInvoice&&onCreateInvoice(o)}><i className="ti ti-receipt"/></button><button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>{
             const o2={...o,load_date:normalizeDate(o.load_date),unload_date:normalizeDate(o.unload_date)};
@@ -2015,7 +2035,34 @@ const Orders=({db,onCreateInvoice,onOpenInvoicePreview})=>{
             }
             setForm(o2);setExtras(o.extras||[]);setModal(true);
           }}><i className="ti ti-edit"/></button><button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setOrders(p=>p.filter(x=>x.id!==o.id))}><i className="ti ti-trash"/></button></td>
-      </tr>))}</tbody>
+      </tr>);})}
+      </tbody>
+      {(()=>{
+        const er=parseFloat(settings.eur_rate)||0;
+        const cons=parseFloat(settings.fuel_consumption)||0;
+        const fp=parseFloat(settings.fuel_price_eur)||0;
+        let totalProfit=0;let hasProfit=false;
+        filtered.forEach(o=>{
+          const freight=parseFloat(o.rate)||0;
+          const highway=parseFloat(o.rate_highway)||0;
+          const parking=parseFloat(o.rate_parking)||0;
+          const extrasSum=(o.extras||[]).reduce((s,e)=>s+(parseFloat(e.amount)||0),0);
+          const km=parseFloat(o.kilometers)||0;
+          const fuelEUR=km>0&&cons>0&&fp>0?(km/100*cons*fp):0;
+          const refDate=o.load_date||today();
+          const mTrip=trips.find(t=>t.vehicle_reg===o.vehicle_reg&&t.start_date&&t.start_date<=refDate&&(!t.end_date||t.end_date>=refDate));
+          const dr=parseFloat(mTrip?.daily_rate)||0;
+          const days=(()=>{if(!o.load_date)return null;const end=o.unload_date?new Date(o.unload_date):null;if(!end)return 1;return Math.max(1,Math.round((end-new Date(o.load_date))/86400000));})();
+          const driverCost=days&&dr?days*dr:0;
+          if(er>0){totalProfit+=(freight-highway-parking-extrasSum-fuelEUR)*er-driverCost;hasProfit=true;}
+        });
+        if(!hasProfit)return null;
+        return<tfoot><tr style={{background:'#f5f4f0',fontWeight:700}}>
+          <td style={C.td} colSpan={9}>Suma ({filtered.length} zleceń)</td>
+          <td style={{...C.td,fontSize:13,color:totalProfit>=0?'#3B6D11':'#A32D2D'}}>{totalProfit>=0?'+':''}{totalProfit.toFixed(0)} zł</td>
+          <td style={C.td} colSpan={2}></td>
+        </tr></tfoot>;
+      })()}
     </table>{filtered.length===0&&<div style={{textAlign:'center',padding:20,color:'#888',fontSize:11}}>Brak zleceń</div>}</div>
 
     {/* Report area - rendered visibly, exported to PDF */}
