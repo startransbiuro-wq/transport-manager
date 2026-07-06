@@ -39,6 +39,12 @@ button{cursor:pointer}
   .tacho-summary{display:none!important}
 }
 
+  /* Cost row — custom layout, override generic table CSS */
+  .tm-cost-row td{display:block!important;padding:0!important;border:none!important;max-width:none!important}
+  .tm-cost-row td:first-child{font-weight:400!important;font-size:inherit!important;padding-bottom:0!important;border:none!important}
+  .tm-cost-row td:last-child{display:block!important;padding:0!important;border:none!important}
+  .tm-hide-mobile{display:none!important}
+
 /* ── MOBILE ───────────────────────────────────────────────────────────── */
 @media(max-width:768px){
   aside{display:none!important}
@@ -2978,7 +2984,7 @@ const Invoices=({db,pendingInvoice,onClearPending,openPreviewId,onPreviewOpened}
               <span style={{fontSize:bold?13:12,fontWeight:bold?600:400,color:'#F2A0C4'}}>{pln.toFixed(2)} zł</span>
             </div>
           );
-          return<div style={{display:'flex',gap:24,flexWrap:'wrap'}}>
+          return<div style={{display:'flex',gap:12,flexWrap:'nowrap',overflowX:'auto'}}>
             <Row label="Netto" eur={sum.netEUR} pln={sum.netPLN}/>
             <Row label="VAT" eur={sum.vatEUR} pln={sum.vatPLN}/>
             <Row label="Brutto" eur={sum.grossEUR} pln={sum.grossPLN} bold/>
@@ -4531,39 +4537,44 @@ const Finanse=({db})=>{
       </div>}
 
       <table style={{width:'100%',borderCollapse:'collapse'}}>
-        <thead><tr>{['Data','Sprzedawca / Opis','Brutto','Płatność','Księgowy','KSeF',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
-        <tbody>{monthCosts.sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(c=>(<tr key={c.id} style={{borderBottom:'0.5px solid rgba(0,0,0,0.07)'}}>
-          <td style={{...C.td,whiteSpace:'nowrap',fontSize:11}}>{c.date||'–'}</td>
-          <td style={{...C.td,maxWidth:260}}>
-            <div style={{fontWeight:500,fontSize:12,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.seller||'–'}</div>
-            <div style={{fontSize:10,color:'#888',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{[c.category,c.invoice_number,c.description].filter(Boolean).join(' · ')||''}</div>
-          </td>
-          <td style={{...C.td,whiteSpace:'nowrap',fontWeight:600,fontSize:12}}>{parseFloat(c.amount_gross||0).toFixed(2)} {c.currency||'PLN'}</td>
-          <td style={C.td}>
-            <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,paid:!x.paid}:x))}
-              style={{...bdg(c.paid?'green':'red'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10,whiteSpace:'nowrap'}}>
-              {costTab==='księgowe'?(c.paid?'✓ Rozlicz.':'✗ Nierozlicz.'):(c.paid?'✓ Zapłac.':'✗ Niezapłac.')}
-            </button>
-          </td>
-          <td style={C.td}>
-            {costTab==='realne'&&<button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,also_accountant:!x.also_accountant}:x))}
-              style={{...bdg(c.also_accountant?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10,whiteSpace:'nowrap'}}>
-              {c.also_accountant?'✓ Księgowy':'– Księgowy'}
-            </button>}
-            {costTab==='księgowe'&&c.also_accountant&&<span style={{...bdg('blue'),fontSize:10}}>z realnych</span>}
-          </td>
-          <td style={C.td}>
-            <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,ksef:!x.ksef}:x))}
-              style={{...bdg(c.ksef?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10}}>
-              {c.ksef?'✓ KSeF':'– KSeF'}
-            </button>
-          </td>
-          <td style={{...C.td,whiteSpace:'nowrap'}}>
-            {c.doc_file&&<button style={{...C.btn,padding:'2px 5px',color:'#185FA5',marginRight:3}} onClick={()=>setPdfPreview({data:c.doc_file,name:c.doc_file_name})}><i className="ti ti-file-type-pdf"/></button>}
-            <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setForm(c);setManualCat(!costCategories.includes(c.category)&&!!c.category);setModal(true)}}><i className="ti ti-edit"/></button>
-            <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setCosts(p=>p.filter(x=>x.id!==c.id))}><i className="ti ti-trash"/></button>
-          </td>
-        </tr>))}</tbody>
+        <thead className="tm-hide-mobile"><tr>{['Data','Sprzedawca / Opis','Brutto','Płatność','Księgowy','KSeF',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
+        <tbody>{monthCosts.sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(c=>(
+          <tr key={c.id} className="tm-cost-row">
+            {/* Line 1: date + seller/desc + amount */}
+            <td colSpan={7} style={{padding:0,border:'none'}}>
+              <div style={{display:'flex',flexDirection:'column',borderBottom:'0.5px solid rgba(0,0,0,0.07)',padding:'6px 8px',gap:3}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'nowrap'}}>
+                  <span style={{fontSize:10,color:'#888',whiteSpace:'nowrap',flexShrink:0}}>{c.date||'–'}</span>
+                  <span style={{fontWeight:600,fontSize:12,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.seller||'–'}</span>
+                  <span style={{fontWeight:700,fontSize:12,whiteSpace:'nowrap',flexShrink:0}}>{parseFloat(c.amount_gross||0).toFixed(2)} {c.currency||'PLN'}</span>
+                  {c.amount_net&&<span style={{fontSize:10,color:'#888',whiteSpace:'nowrap',flexShrink:0}}>/ {parseFloat(c.amount_net).toFixed(2)} netto</span>}
+                </div>
+                {[c.category,c.invoice_number,c.description].filter(Boolean).length>0&&
+                  <div style={{fontSize:10,color:'#888',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{[c.category,c.invoice_number,c.description].filter(Boolean).join(' · ')}</div>
+                }
+                <div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'nowrap',overflowX:'auto'}}>
+                  <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,paid:!x.paid}:x))}
+                    style={{...bdg(c.paid?'green':'red'),cursor:'pointer',border:'none',padding:'2px 7px',borderRadius:20,fontSize:10,whiteSpace:'nowrap',flexShrink:0}}>
+                    {c.paid?'✓ Zapł.':'✗ Niezapł.'}
+                  </button>
+                  {costTab==='realne'&&<button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,also_accountant:!x.also_accountant}:x))}
+                    style={{...bdg(c.also_accountant?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 7px',borderRadius:20,fontSize:10,whiteSpace:'nowrap',flexShrink:0}}>
+                    {c.also_accountant?'✓ Księg.':'– Księg.'}
+                  </button>}
+                  <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,ksef:!x.ksef}:x))}
+                    style={{...bdg(c.ksef?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 7px',borderRadius:20,fontSize:10,whiteSpace:'nowrap',flexShrink:0}}>
+                    {c.ksef?'✓ KSeF':'– KSeF'}
+                  </button>
+                  <div style={{marginLeft:'auto',display:'flex',gap:3,flexShrink:0}}>
+                    {c.doc_file&&<button style={{...C.btn,padding:'2px 4px',color:'#185FA5'}} onClick={()=>setPdfPreview({data:c.doc_file,name:c.doc_file_name})}><i className="ti ti-file-type-pdf"/></button>}
+                    <button style={{...C.btn,padding:'2px 4px'}} onClick={()=>{setForm(c);setManualCat(!costCategories.includes(c.category)&&!!c.category);setModal(true)}}><i className="ti ti-edit"/></button>
+                    <button style={{...C.btn,padding:'2px 4px'}} onClick={()=>setCosts(p=>p.filter(x=>x.id!==c.id))}><i className="ti ti-trash"/></button>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+        ))}</tbody>
       </table>
       {monthCosts.length===0&&<div style={{textAlign:'center',padding:20,color:'#888',fontSize:11}}>Brak kosztów w tym miesiącu — {costTab==='realne'?'Koszty realne':'Koszty do księgowego'}.</div>}
       {monthCosts.length>0&&<div style={{borderTop:'2px solid #1a1a18',padding:'8px 12px',background:'#f5f4f0'}}>
