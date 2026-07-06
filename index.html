@@ -75,7 +75,7 @@ button{cursor:pointer}
     min-height:46px;
   }
   label{font-size:12px!important}
-  button{min-height:44px;font-size:14px!important}
+  button:not(table button){min-height:44px;font-size:14px!important}
 
   /* H1 */
   h1{font-size:17px!important}
@@ -83,51 +83,61 @@ button{cursor:pointer}
   /* CARD */
   div[class*="card"]{border-radius:12px!important}
 
-  /* ── TABLES → CARD LIST ─────────────────────────── */
-  table{width:100%!important}
-  table thead{display:none!important}
+  /* ── TABLES → COMPACT ROWS ON MOBILE ─────────────── */
+  /* Default: keep as compact table, not cards */
+  table{width:100%!important;font-size:11px!important}
+  table thead tr{display:none!important}
   table tbody tr{
-    display:block!important;
-    background:#fff;
-    border-radius:13px!important;
-    margin-bottom:12px!important;
-    padding:14px 14px 10px!important;
-    box-shadow:0 1px 6px rgba(0,0,0,0.07);
-    border:0.5px solid rgba(0,0,0,0.08);
-    overflow:hidden;
-  }
-  table tbody td{
     display:flex!important;
-    align-items:center;
-    padding:5px 0!important;
-    border:none!important;
-    font-size:14px!important;
-    gap:8px;
     flex-wrap:wrap;
+    border-bottom:1px solid rgba(0,0,0,0.08)!important;
+    padding:5px 6px!important;
+    background:#fff;
+    border-radius:0!important;
+    margin-bottom:0!important;
+    box-shadow:none!important;
+    align-items:center;
+    gap:2px 6px;
+  }
+  table tbody tr:nth-child(odd){background:#fafaf8!important}
+  table tbody td{
+    display:inline!important;
+    padding:0!important;
+    border:none!important;
+    font-size:11px!important;
     line-height:1.4;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    max-width:50vw;
   }
+  /* First td = full row, bold */
   table tbody td:first-child{
-    font-size:15px!important;font-weight:700!important;
-    padding-bottom:10px!important;
-    border-bottom:1px solid rgba(0,0,0,0.06)!important;
-    margin-bottom:4px;
+    display:block!important;
+    font-size:12px!important;font-weight:600!important;
+    width:100%;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    padding-bottom:1px!important;
+    border:none!important;
+    margin-bottom:0;
   }
+  /* Last td = actions, right aligned */
   table tbody td:last-child{
+    display:flex!important;
     justify-content:flex-end!important;
-    padding-top:10px!important;
-    border-top:0.5px solid rgba(0,0,0,0.06)!important;
-    margin-top:6px;gap:8px;
+    margin-left:auto;
+    gap:4px;
+    padding:2px 0!important;
+    border:none!important;
   }
-  table tbody td[data-label]:before{
-    content:attr(data-label);
-    font-size:11px;color:#888;font-weight:600;
-    text-transform:uppercase;letter-spacing:0.04em;
-    white-space:nowrap;min-width:90px;flex-shrink:0;
-  }
+  /* hide less important cols */
   table tbody td.tm-hide-mobile{display:none!important}
+  /* buttons inside table smaller on mobile */
+  table tbody td button{min-height:30px!important;padding:3px 6px!important;font-size:11px!important}
+  table tbody td span[style]{font-size:10px!important}
 
   /* BADGES inline */
-  span[style*="borderRadius:20"]{font-size:11px!important;padding:3px 8px!important}
+  span[style*="borderRadius:20"]{font-size:10px!important;padding:2px 6px!important}
 }
 
 @media(min-width:769px){
@@ -4349,7 +4359,11 @@ const Finanse=({db})=>{
   },{netEUR:0,vatEUR:0,grossEUR:0,netPLN:0,vatPLN:0,grossPLN:0,hasPLN:false});
 
   // Costs filtered by tab and month
-  const tabCosts=costs.filter(c=>(c.type||'realne')===costTab);
+  const tabCosts=costs.filter(c=>{
+    if(costTab==='realne') return (c.type||'realne')==='realne';
+    if(costTab==='księgowe') return c.type==='księgowe'||(c.also_accountant&&(c.type||'realne')==='realne');
+    return false;
+  });
   const monthCosts=tabCosts.filter(c=>{
     if(!(c.date||'').startsWith(selMonth))return false;
     if(fPaid==='paid'&&!c.paid)return false;
@@ -4514,19 +4528,38 @@ const Finanse=({db})=>{
       </div>}
 
       <table style={{width:'100%',borderCollapse:'collapse'}}>
-        <thead><tr>{['Data','Kategoria','Sprzedawca','Nr faktury','Opis','Netto','Brutto',costTab==='księgowe'?'Rozliczenie':'Płatność','KSeF','PDF',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
-        <tbody>{monthCosts.sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(c=>(<tr key={c.id}>
-          <td style={C.td}>{c.date}</td>
-          <td style={C.td}>{c.category?<span style={bdg('gray')}>{c.category}</span>:'–'}</td>
-          <td style={C.td}>{c.seller||'–'}</td>
-          <td style={{...C.td,fontFamily:'monospace',fontSize:10}}>{c.invoice_number||'–'}</td>
-          <td style={{...C.td,maxWidth:200}}><div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.description||'–'}</div></td>
-          <td style={C.td}>{c.amount_net?`${parseFloat(c.amount_net).toFixed(2)} ${c.currency||'PLN'}`:'–'}</td>
-          <td style={C.td}><strong>{parseFloat(c.amount_gross||0).toFixed(2)} {c.currency||'PLN'}</strong></td>
-          <td style={C.td}><button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,paid:!x.paid}:x))} style={{...bdg(c.paid?'green':'red'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10}}>{costTab==='księgowe'?(c.paid?'✓ Rozliczony':'✗ Nierozliczony'):(c.paid?'✓ Zapłacony':'✗ Niezapłacony')}</button></td>
-          <td style={C.td}><button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,ksef:!x.ksef}:x))} style={{...bdg(c.ksef?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10}}>{c.ksef?'✓ KSeF':'– KSeF'}</button></td>
-          <td style={C.td}>{c.doc_file?<button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setPdfPreview({data:c.doc_file,name:c.doc_file_name})} title="Podgląd"><i className="ti ti-file-type-pdf"/></button>:<span style={{color:'#aaa',fontSize:10}}>–</span>}</td>
-          <td style={C.td}><button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setForm(c);setManualCat(!costCategories.includes(c.category)&&!!c.category);setModal(true)}}><i className="ti ti-edit"/></button><button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setCosts(p=>p.filter(x=>x.id!==c.id))}><i className="ti ti-trash"/></button></td>
+        <thead><tr>{['Data','Sprzedawca / Opis','Brutto','Płatność','Księgowy','KSeF',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
+        <tbody>{monthCosts.sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(c=>(<tr key={c.id} style={{borderBottom:'0.5px solid rgba(0,0,0,0.07)'}}>
+          <td style={{...C.td,whiteSpace:'nowrap',fontSize:11}}>{c.date||'–'}</td>
+          <td style={{...C.td,maxWidth:260}}>
+            <div style={{fontWeight:500,fontSize:12,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.seller||'–'}</div>
+            <div style={{fontSize:10,color:'#888',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{[c.category,c.invoice_number,c.description].filter(Boolean).join(' · ')||''}</div>
+          </td>
+          <td style={{...C.td,whiteSpace:'nowrap',fontWeight:600,fontSize:12}}>{parseFloat(c.amount_gross||0).toFixed(2)} {c.currency||'PLN'}</td>
+          <td style={C.td}>
+            <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,paid:!x.paid}:x))}
+              style={{...bdg(c.paid?'green':'red'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10,whiteSpace:'nowrap'}}>
+              {costTab==='księgowe'?(c.paid?'✓ Rozlicz.':'✗ Nierozlicz.'):(c.paid?'✓ Zapłac.':'✗ Niezapłac.')}
+            </button>
+          </td>
+          <td style={C.td}>
+            {costTab==='realne'&&<button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,also_accountant:!x.also_accountant}:x))}
+              style={{...bdg(c.also_accountant?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10,whiteSpace:'nowrap'}}>
+              {c.also_accountant?'✓ Księgowy':'– Księgowy'}
+            </button>}
+            {costTab==='księgowe'&&c.also_accountant&&<span style={{...bdg('blue'),fontSize:10}}>z realnych</span>}
+          </td>
+          <td style={C.td}>
+            <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,ksef:!x.ksef}:x))}
+              style={{...bdg(c.ksef?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10}}>
+              {c.ksef?'✓ KSeF':'– KSeF'}
+            </button>
+          </td>
+          <td style={{...C.td,whiteSpace:'nowrap'}}>
+            {c.doc_file&&<button style={{...C.btn,padding:'2px 5px',color:'#185FA5',marginRight:3}} onClick={()=>setPdfPreview({data:c.doc_file,name:c.doc_file_name})}><i className="ti ti-file-type-pdf"/></button>}
+            <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setForm(c);setManualCat(!costCategories.includes(c.category)&&!!c.category);setModal(true)}}><i className="ti ti-edit"/></button>
+            <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setCosts(p=>p.filter(x=>x.id!==c.id))}><i className="ti ti-trash"/></button>
+          </td>
         </tr>))}</tbody>
       </table>
       {monthCosts.length===0&&<div style={{textAlign:'center',padding:20,color:'#888',fontSize:11}}>Brak kosztów w tym miesiącu — {costTab==='realne'?'Koszty realne':'Koszty do księgowego'}.</div>}
