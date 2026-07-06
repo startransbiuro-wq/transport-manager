@@ -39,28 +39,36 @@ button{cursor:pointer}
   .tacho-summary{display:none!important}
 }
 
-  /* Cost row — custom layout, override generic table CSS */
-  .tm-cost-row{margin:0!important;padding:0!important}
-  .tm-cost-row td{display:block!important;padding:0!important;border:none!important;max-width:none!important;width:100%!important}
-  .tm-cost-row td:first-child{font-weight:400!important;font-size:inherit!important;padding:0!important;border:none!important;margin:0!important}
-  .tm-cost-row td:last-child{display:block!important;padding:0!important;border:none!important}
-  .tm-cost-row .cost-inner{padding:5px 6px!important;overflow:hidden}
-  .tm-hide-mobile{display:none!important}
-  /* Make table not clip content */
-  table{overflow:visible!important}
-  table tbody tr.tm-cost-row{overflow:visible!important}
-
 /* ── MOBILE ───────────────────────────────────────────────────────────── */
 @media(max-width:768px){
   aside{display:none!important}
   main{width:100%!important;flex:1}
   header{padding:8px 14px!important;min-height:48px}
-  .tm-content{padding:12px 10px!important;padding-bottom:16px!important;overflow-x:hidden}
+  .tm-content{padding:4px 0!important;padding-bottom:16px!important;overflow-x:hidden}
 
   .tm-desktop-only{display:none!important}
   .tm-mobile-bar{display:none!important}
   .tm-mobile-only{display:flex!important}
   .tm-mobile-menu{display:flex!important}
+
+  /* tm-cost-table: desktop = normal table, mobile = compact 2-line card */
+  .tm-hide-mobile{display:none!important}
+
+  /* ── MOBILE COST TABLE ─────────── */
+  table.tm-cost-table thead{display:none!important}
+  table.tm-cost-table tbody tr.tm-cost-row{
+    display:block!important;
+    padding:5px 8px!important;
+    border-bottom:1px solid rgba(0,0,0,0.08)!important;
+    background:#fff;border-radius:0!important;box-shadow:none!important;margin:0!important;
+  }
+  table.tm-cost-table tbody tr.tm-cost-row:nth-child(odd){background:#fafaf8!important}
+  table.tm-cost-table .tm-cost-desktop{display:none!important}
+  table.tm-cost-table .tm-cost-mobile{display:block!important;width:100%!important}
+  table.tm-cost-table tbody tr.tm-cost-row td{
+    display:none!important;border:none!important;padding:0!important;
+  }
+  table.tm-cost-table .tm-cost-mobile{display:block!important}
 
   /* ALL GRIDS → single column */
   div[style*="gridTemplateColumns"]{grid-template-columns:1fr!important}
@@ -4541,42 +4549,69 @@ const Finanse=({db})=>{
         <div><label style={C.lbl}>Kwota brutto do (zł)</label><input style={C.inp} type="number" step="0.01" value={fAmtMax} onChange={e=>setFAmtMax(e.target.value)} placeholder="np. 5000"/></div>
       </div>}
 
-      <table style={{width:'100%',borderCollapse:'collapse'}}>
-        <thead className="tm-hide-mobile"><tr>{['Data','Sprzedawca / Opis','Brutto','Płatność','Księgowy','KSeF',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
+      <table className="tm-cost-table" style={{width:'100%',borderCollapse:'collapse'}}>
+        <thead><tr>{['Data','Sprzedawca / Opis','Netto','Brutto','Płatność','Księgowy','KSeF',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
         <tbody>{monthCosts.sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(c=>(
           <tr key={c.id} className="tm-cost-row">
-            {/* Line 1: date + seller/desc + amount */}
-            <td colSpan={7} style={{padding:0,border:'none'}}>
-              <div className="cost-inner" style={{display:'flex',flexDirection:'column',borderBottom:'0.5px solid rgba(0,0,0,0.07)',gap:3}}>
-                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'nowrap'}}>
-                  <span style={{fontSize:10,color:'#888',whiteSpace:'nowrap',flexShrink:0}}>{c.date||'–'}</span>
-                  <span style={{fontWeight:600,fontSize:12,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.seller||'–'}</span>
-                  <span style={{fontWeight:700,fontSize:12,whiteSpace:'nowrap',flexShrink:0}}>{parseFloat(c.amount_gross||0).toFixed(2)} {c.currency||'PLN'}</span>
-                  {c.amount_net&&<span style={{fontSize:10,color:'#888',whiteSpace:'nowrap',flexShrink:0}}>/ {parseFloat(c.amount_net).toFixed(2)} netto</span>}
-                </div>
-                {[c.category,c.invoice_number,c.description].filter(Boolean).length>0&&
-                  <div style={{fontSize:10,color:'#888',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{[c.category,c.invoice_number,c.description].filter(Boolean).join(' · ')}</div>
-                }
-                <div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'nowrap',overflowX:'auto'}}>
-                  <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,paid:!x.paid}:x))}
-                    style={{...bdg(c.paid?'green':'red'),cursor:'pointer',border:'none',padding:'2px 7px',borderRadius:20,fontSize:10,whiteSpace:'nowrap',flexShrink:0}}>
-                    {c.paid?'✓ Zapł.':'✗ Niezapł.'}
-                  </button>
-                  {costTab==='realne'&&<button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,also_accountant:!x.also_accountant}:x))}
-                    style={{...bdg(c.also_accountant?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 7px',borderRadius:20,fontSize:10,whiteSpace:'nowrap',flexShrink:0}}>
-                    {c.also_accountant?'✓ Księg.':'– Księg.'}
-                  </button>}
-                  <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,ksef:!x.ksef}:x))}
-                    style={{...bdg(c.ksef?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 7px',borderRadius:20,fontSize:10,whiteSpace:'nowrap',flexShrink:0}}>
-                    {c.ksef?'✓ KSeF':'– KSeF'}
-                  </button>
-                  <div style={{marginLeft:'auto',display:'flex',gap:3,flexShrink:0}}>
-                    {c.doc_file&&<button style={{...C.btn,padding:'2px 4px',color:'#185FA5'}} onClick={()=>setPdfPreview({data:c.doc_file,name:c.doc_file_name})}><i className="ti ti-file-type-pdf"/></button>}
-                    <button style={{...C.btn,padding:'2px 4px'}} onClick={()=>{setForm(c);setManualCat(!costCategories.includes(c.category)&&!!c.category);setModal(true)}}><i className="ti ti-edit"/></button>
-                    <button style={{...C.btn,padding:'2px 4px'}} onClick={()=>setCosts(p=>p.filter(x=>x.id!==c.id))}><i className="ti ti-trash"/></button>
-                  </div>
+            <td style={C.td}>{c.date||'–'}</td>
+            <td style={{...C.td,maxWidth:220}} className="tm-cost-desktop">
+              <div style={{fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.seller||'–'}</div>
+              <div style={{fontSize:10,color:'#888',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{[c.category,c.invoice_number,c.description].filter(Boolean).join(' · ')}</div>
+            </td>
+            {/* Mobile-only: all info in one cell */}
+            <td className="tm-cost-mobile" style={{display:'none',padding:'6px 0',border:'none'}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'nowrap'}}>
+                <span style={{fontSize:10,color:'#888',whiteSpace:'nowrap',flexShrink:0}}>{c.date||'–'}</span>
+                <span style={{fontWeight:600,fontSize:12,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.seller||'–'}</span>
+                <span style={{fontWeight:700,fontSize:12,whiteSpace:'nowrap',flexShrink:0}}>{parseFloat(c.amount_gross||0).toFixed(2)} {c.currency||'PLN'}</span>
+              </div>
+              {[c.category,c.invoice_number,c.description].filter(Boolean).length>0&&
+                <div style={{fontSize:10,color:'#888',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginTop:1}}>{[c.category,c.invoice_number,c.description].filter(Boolean).join(' · ')}</div>}
+              <div style={{display:'flex',alignItems:'center',gap:4,marginTop:4,flexWrap:'nowrap',overflowX:'auto'}}>
+                <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,paid:!x.paid}:x))}
+                  style={{...bdg(c.paid?'green':'red'),cursor:'pointer',border:'none',padding:'2px 6px',borderRadius:20,fontSize:10,whiteSpace:'nowrap',flexShrink:0}}>
+                  {c.paid?'✓ Zapł.':'✗ Niezapł.'}
+                </button>
+                {costTab==='realne'&&<button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,also_accountant:!x.also_accountant}:x))}
+                  style={{...bdg(c.also_accountant?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 6px',borderRadius:20,fontSize:10,whiteSpace:'nowrap',flexShrink:0}}>
+                  {c.also_accountant?'✓ Księg.':'– Księg.'}
+                </button>}
+                <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,ksef:!x.ksef}:x))}
+                  style={{...bdg(c.ksef?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 6px',borderRadius:20,fontSize:10,flexShrink:0}}>
+                  {c.ksef?'✓ KSeF':'– KSeF'}
+                </button>
+                <div style={{marginLeft:'auto',display:'flex',gap:3,flexShrink:0}}>
+                  {c.doc_file&&<button style={{...C.btn,padding:'2px 4px',color:'#185FA5'}} onClick={()=>setPdfPreview({data:c.doc_file,name:c.doc_file_name})}><i className="ti ti-file-type-pdf"/></button>}
+                  <button style={{...C.btn,padding:'2px 4px'}} onClick={()=>{setForm(c);setManualCat(!costCategories.includes(c.category)&&!!c.category);setModal(true)}}><i className="ti ti-edit"/></button>
+                  <button style={{...C.btn,padding:'2px 4px'}} onClick={()=>setCosts(p=>p.filter(x=>x.id!==c.id))}><i className="ti ti-trash"/></button>
                 </div>
               </div>
+            </td>
+            <td style={{...C.td,whiteSpace:'nowrap'}}>{c.amount_net?`${parseFloat(c.amount_net).toFixed(2)} ${c.currency||'PLN'}`:'–'}</td>
+            <td style={{...C.td,whiteSpace:'nowrap',fontWeight:600}}>{parseFloat(c.amount_gross||0).toFixed(2)} {c.currency||'PLN'}</td>
+            <td style={C.td}>
+              <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,paid:!x.paid}:x))}
+                style={{...bdg(c.paid?'green':'red'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10,whiteSpace:'nowrap'}}>
+                {costTab==='księgowe'?(c.paid?'✓ Rozlicz.':'✗ Nierozlicz.'):(c.paid?'✓ Zapłac.':'✗ Niezapłac.')}
+              </button>
+            </td>
+            <td style={C.td}>
+              {costTab==='realne'&&<button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,also_accountant:!x.also_accountant}:x))}
+                style={{...bdg(c.also_accountant?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10,whiteSpace:'nowrap'}}>
+                {c.also_accountant?'✓ Księgowy':'– Księgowy'}
+              </button>}
+              {costTab==='księgowe'&&c.also_accountant&&<span style={{...bdg('blue'),fontSize:10}}>z realnych</span>}
+            </td>
+            <td style={C.td}>
+              <button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,ksef:!x.ksef}:x))}
+                style={{...bdg(c.ksef?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10}}>
+                {c.ksef?'✓ KSeF':'– KSeF'}
+              </button>
+            </td>
+            <td style={{...C.td,whiteSpace:'nowrap'}}>
+              {c.doc_file&&<button style={{...C.btn,padding:'2px 5px',color:'#185FA5',marginRight:3}} onClick={()=>setPdfPreview({data:c.doc_file,name:c.doc_file_name})}><i className="ti ti-file-type-pdf"/></button>}
+              <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setForm(c);setManualCat(!costCategories.includes(c.category)&&!!c.category);setModal(true)}}><i className="ti ti-edit"/></button>
+              <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setCosts(p=>p.filter(x=>x.id!==c.id))}><i className="ti ti-trash"/></button>
             </td>
           </tr>
         ))}</tbody>
