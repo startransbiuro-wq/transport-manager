@@ -4392,7 +4392,7 @@ const Finanse=({db})=>{
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}}>
       <h1 style={{fontSize:18,fontWeight:500,margin:0}}>Finanse</h1>
       <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-        <button style={{...C.btnP,padding:'6px 10px'}} onClick={()=>{
+        <button style={{...C.btnP,padding:'6px 10px',flexShrink:0}} onClick={()=>{
           const er=parseFloat(settings?.eur_rate)||0;
           const tNet=monthCosts.reduce((s,c)=>{const v=parseFloat(c.amount_net||0);if((c.currency||'PLN')==='EUR')s.eur+=v;else s.pln+=v;return s;},{eur:0,pln:0});
           const tGross=monthCosts.reduce((s,c)=>{const v=parseFloat(c.amount_gross||0);if((c.currency||'PLN')==='EUR')s.eur+=v;else s.pln+=v;return s;},{eur:0,pln:0});
@@ -4401,21 +4401,24 @@ const Finanse=({db})=>{
           const rows=monthCosts.sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(c=>'<tr><td>'+[c.date||'',c.category||'',c.seller||'',c.invoice_number||'',c.description||''].join('</td><td>')+'</td><td style="text-align:right">'+(c.amount_net?parseFloat(c.amount_net).toFixed(2)+' '+(c.currency||'PLN'):'')+'</td><td style="text-align:right;font-weight:600">'+parseFloat(c.amount_gross||0).toFixed(2)+' '+(c.currency||'PLN')+'</td><td style="text-align:center">'+(c.paid?'&#x2713;':'&#x2717;')+'</td><td style="text-align:center">'+(c.ksef?'&#x2713;':'')+'</td></tr>').join('');
           const html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Finanse '+selMonth+'</title><style>body{font-family:sans-serif;font-size:11px;margin:20px}h1{font-size:16px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:5px 8px}th{background:#f5f4f0;font-size:10px}tr:nth-child(even){background:#fafaf8}.sum{background:#e8f4e8;font-weight:700}</style></head><body><h1>Koszty - '+selMonth+'</h1><p style="color:#555;font-size:12px">'+monthCosts.length+' pozycji</p><table><thead><tr><th>Data</th><th>Kategoria</th><th>Sprzedawca</th><th>Nr faktury</th><th>Opis</th><th>Netto</th><th>Brutto</th><th>Oplacono</th><th>KSeF</th></tr></thead><tbody>'+rows+'<tr class="sum"><td colspan="5"><strong>SUMA</strong></td><td style="text-align:right">'+totalNet+'</td><td style="text-align:right">'+totalGross+'</td><td colspan="2"></td></tr></tbody></table></body></html>';
           const w=window.open('','_blank');if(w){w.document.write(html);w.document.close();setTimeout(()=>w.print(),400);}
-        }}><i className="ti ti-file-type-pdf"/> Raport PDF</button>
-        <button style={{...C.btn,padding:'6px 10px'}} onClick={()=>{
-          let y=parseInt(selYear),mo=parseInt(selMM)-1;if(mo<1){mo=12;y--;}
-          setSelMonth(`${y}-${String(mo).padStart(2,'0')}`);
-        }}><i className="ti ti-chevron-left"/></button>
-        <select style={{...C.inp,width:130}} value={selMM} onChange={e=>setSelMonth(`${selYear}-${e.target.value}`)}>
-          {names.map((n,i)=><option key={n} value={String(i+1).padStart(2,'0')}>{n}</option>)}
-        </select>
-        <select style={{...C.inp,width:90}} value={selYear} onChange={e=>setSelMonth(`${e.target.value}-${selMM}`)}>
-          {Array.from({length:7},(_,i)=>parseInt(today().slice(0,4))-3+i).map(y=><option key={y} value={y}>{y}</option>)}
-        </select>
-        <button style={{...C.btn,padding:'6px 10px'}} onClick={()=>{
-          let y=parseInt(selYear),mo=parseInt(selMM)+1;if(mo>12){mo=1;y++;}
-          setSelMonth(`${y}-${String(mo).padStart(2,'0')}`);
-        }}><i className="ti ti-chevron-right"/></button>
+        }}><i className="ti ti-file-type-pdf"/> Raport</button>
+        {/* Month navigation — all on one row, no wrap */}
+        <div style={{display:'flex',alignItems:'center',gap:4,flexShrink:0}}>
+          <button style={{...C.btn,padding:'6px 8px'}} onClick={()=>{
+            let y=parseInt(selYear),mo=parseInt(selMM)-1;if(mo<1){mo=12;y--;}
+            setSelMonth(`${y}-${String(mo).padStart(2,'0')}`);
+          }}><i className="ti ti-chevron-left"/></button>
+          <select style={{...C.inp,width:110,minWidth:0}} value={selMM} onChange={e=>setSelMonth(`${selYear}-${e.target.value}`)}>
+            {names.map((n,i)=><option key={n} value={String(i+1).padStart(2,'0')}>{n}</option>)}
+          </select>
+          <select style={{...C.inp,width:72,minWidth:0}} value={selYear} onChange={e=>setSelMonth(`${e.target.value}-${selMM}`)}>
+            {Array.from({length:7},(_,i)=>parseInt(today().slice(0,4))-3+i).map(y=><option key={y} value={y}>{y}</option>)}
+          </select>
+          <button style={{...C.btn,padding:'6px 8px'}} onClick={()=>{
+            let y=parseInt(selYear),mo=parseInt(selMM)+1;if(mo>12){mo=1;y++;}
+            setSelMonth(`${y}-${String(mo).padStart(2,'0')}`);
+          }}><i className="ti ti-chevron-right"/></button>
+        </div>
       </div>
     </div>
 
@@ -4563,25 +4566,25 @@ const Finanse=({db})=>{
         </tr>))}</tbody>
       </table>
       {monthCosts.length===0&&<div style={{textAlign:'center',padding:20,color:'#888',fontSize:11}}>Brak kosztów w tym miesiącu — {costTab==='realne'?'Koszty realne':'Koszty do księgowego'}.</div>}
-      {monthCosts.length>0&&<div style={{borderTop:'2px solid #1a1a18',padding:'12px 14px',background:'#f5f4f0'}}>
-        <div style={{display:'flex',gap:24,flexWrap:'wrap',alignItems:'center'}}>
-          <div>
-            <div style={{fontSize:10,color:'#888',marginBottom:2}}>Suma netto</div>
-            <div style={{fontSize:14,fontWeight:600}}>
+      {monthCosts.length>0&&<div style={{borderTop:'2px solid #1a1a18',padding:'8px 12px',background:'#f5f4f0'}}>
+        <div style={{display:'flex',gap:12,flexWrap:'nowrap',alignItems:'center',overflowX:'auto'}}>
+          <div style={{flexShrink:0}}>
+            <div style={{fontSize:9,color:'#888'}}>Netto</div>
+            <div style={{fontSize:13,fontWeight:600,whiteSpace:'nowrap'}}>
               {totalCostsNet.eur>0&&<span style={{color:'#185FA5'}}>{totalCostsNet.eur.toFixed(2)} € </span>}
               {totalCostsNet.pln>0&&<span>{totalCostsNet.pln.toFixed(2)} zł</span>}
-              {totalCostsNet.eur>0&&er>0&&<span style={{fontSize:10,color:'#aaa',fontWeight:400,marginLeft:4}}>= {(totalCostsNet.eur*er+totalCostsNet.pln).toFixed(2)} zł</span>}
+              {totalCostsNet.eur>0&&er>0&&<span style={{fontSize:9,color:'#aaa',fontWeight:400,marginLeft:3}}>= {(totalCostsNet.eur*er+totalCostsNet.pln).toFixed(2)} zł</span>}
             </div>
           </div>
-          <div>
-            <div style={{fontSize:10,color:'#888',marginBottom:2}}>Suma brutto</div>
-            <div style={{fontSize:14,fontWeight:700}}>
+          <div style={{flexShrink:0}}>
+            <div style={{fontSize:9,color:'#888'}}>Brutto</div>
+            <div style={{fontSize:13,fontWeight:700,whiteSpace:'nowrap'}}>
               {totalCostsGross.eur>0&&<span style={{color:'#185FA5'}}>{totalCostsGross.eur.toFixed(2)} € </span>}
               {totalCostsGross.pln>0&&<span>{totalCostsGross.pln.toFixed(2)} zł</span>}
-              {totalCostsGross.eur>0&&er>0&&<span style={{fontSize:10,color:'#aaa',fontWeight:400,marginLeft:4}}>= {(totalCostsGross.eur*er+totalCostsGross.pln).toFixed(2)} zł</span>}
+              {totalCostsGross.eur>0&&er>0&&<span style={{fontSize:9,color:'#aaa',fontWeight:400,marginLeft:3}}>= {(totalCostsGross.eur*er+totalCostsGross.pln).toFixed(2)} zł</span>}
             </div>
           </div>
-          <div style={{marginLeft:'auto',fontSize:10,color:'#888'}}>{monthCosts.length} pozycji</div>
+          <div style={{marginLeft:'auto',fontSize:10,color:'#888',flexShrink:0}}>{monthCosts.length} poz.</div>
         </div>
       </div>}
     </div>
