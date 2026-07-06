@@ -44,7 +44,15 @@ button{cursor:pointer}
   aside{display:none!important}
   main{width:100%!important;flex:1}
   header{padding:8px 14px!important;min-height:48px}
-  .tm-content{padding:4px 0!important;padding-bottom:16px!important;overflow-x:hidden}
+  .tm-content{padding:4px 0!important;padding-bottom:16px!important;overflow-x:clip}
+  /* Cost table mobile: full width, no side overflow */
+  table.tm-cost-table{width:100%!important;table-layout:fixed!important}
+  table.tm-cost-table tbody tr.tm-cost-row td.tm-cost-mobile{
+    display:block!important;padding:0!important;border:none!important;
+    width:100%!important;max-width:100%!important;overflow:hidden!important;
+  }
+  /* The card wrapping cost table — remove side padding on mobile */
+  .tm-cost-card{padding-left:0!important;padding-right:0!important;overflow:hidden!important}
 
   .tm-desktop-only{display:none!important}
   .tm-mobile-bar{display:none!important}
@@ -4490,7 +4498,7 @@ const Finanse=({db})=>{
     </div>
 
     {/* Costs */}
-    <div style={C.card}>
+    <div style={C.card} className="tm-cost-card">
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
         <div style={{fontSize:12,fontWeight:500,display:'flex',alignItems:'center',gap:5}}><i className="ti ti-wallet"/>Koszty</div>
         <button style={C.btnP} onClick={()=>{setForm({date:today(),currency:'PLN',paid:false,ksef:false});setManualCat(false);setModal(true)}}><i className="ti ti-plus"/> Dodaj koszt</button>
