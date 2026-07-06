@@ -1507,19 +1507,24 @@ const Vehicles=({db,onGoToRepairs})=>{
     setRegDocsLoading(true);
     for(const f of Array.from(files)){
       try{
-        let url;
+        let url=null;
+        let data=null;
         if(f.type.startsWith('image/')){
-          // Compress then upload to Storage
           const compressed=await compressImage(f,1200,0.75);
           url=await sbUploadBase64(compressed,f.name,`reg_docs/${vehicleId}`);
+          if(!url)data=compressed; // fallback to base64
         }else{
           url=await sbUploadFile(f,`reg_docs/${vehicleId}/${Date.now()}_${f.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`);
+          if(!url){
+            // fallback: read as base64
+            data=await new Promise(res=>{const r=new FileReader();r.onload=e=>res(e.target.result);r.readAsDataURL(f);});
+          }
         }
-        if(url){
-          const doc={id:gid(),name:f.name,url,type:f.type.startsWith('image/')?'image':'pdf'};
+        if(url||data){
+          const doc={id:gid(),name:f.name,url,data,type:f.type.startsWith('image/')?'image':'pdf'};
           setVehicles(p=>p.map(v=>v.id===vehicleId?{...v,reg_docs:[...(v.reg_docs||[]),doc]}:v));
         }
-      }catch(e){console.error('addRegDoc error:',e);}
+      }catch(e){console.error('addRegDoc error:',e);alert('Błąd: '+e.message);}
     }
     setRegDocsLoading(false);
   };
