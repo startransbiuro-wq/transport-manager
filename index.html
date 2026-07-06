@@ -63,12 +63,9 @@ button{cursor:pointer}
     background:#fff;border-radius:0!important;box-shadow:none!important;margin:0!important;
   }
   table.tm-cost-table tbody tr.tm-cost-row:nth-child(odd){background:#fafaf8!important}
-  table.tm-cost-table .tm-cost-desktop{display:none!important}
-  table.tm-cost-table .tm-cost-mobile{display:block!important;width:100%!important}
-  table.tm-cost-table tbody tr.tm-cost-row td{
-    display:none!important;border:none!important;padding:0!important;
-  }
-  table.tm-cost-table .tm-cost-mobile{display:block!important}
+  table.tm-cost-table tbody tr.tm-cost-row td{display:none!important;border:none!important;padding:0!important}
+  table.tm-cost-table tbody tr.tm-cost-row td.tm-cost-desktop{display:none!important}
+  table.tm-cost-table tbody tr.tm-cost-row td.tm-cost-mobile{display:block!important;padding:0!important;border:none!important;width:100%!important;max-width:none!important}
 
   /* ALL GRIDS → single column */
   div[style*="gridTemplateColumns"]{grid-template-columns:1fr!important}
@@ -104,9 +101,9 @@ button{cursor:pointer}
 
   /* ── TABLES → COMPACT ROWS ON MOBILE ─────────────── */
   /* Default: keep as compact table, not cards */
-  table{width:100%!important;font-size:11px!important}
-  table thead tr{display:none!important}
-  table tbody tr{
+  table:not(.tm-cost-table){width:100%!important;font-size:11px!important}
+  table:not(.tm-cost-table) thead tr{display:none!important}
+  table:not(.tm-cost-table) tbody tr{
     display:flex!important;
     flex-wrap:wrap;
     border-bottom:1px solid rgba(0,0,0,0.08)!important;
@@ -118,8 +115,8 @@ button{cursor:pointer}
     align-items:center;
     gap:2px 6px;
   }
-  table tbody tr:nth-child(odd){background:#fafaf8!important}
-  table tbody td{
+  table:not(.tm-cost-table) tbody tr:nth-child(odd){background:#fafaf8!important}
+  table:not(.tm-cost-table) tbody td{
     display:inline!important;
     padding:0!important;
     border:none!important;
@@ -131,7 +128,7 @@ button{cursor:pointer}
     max-width:50vw;
   }
   /* First td = full row, bold */
-  table tbody td:first-child{
+  table:not(.tm-cost-table) tbody td:first-child{
     display:block!important;
     font-size:12px!important;font-weight:600!important;
     width:100%;
@@ -141,7 +138,7 @@ button{cursor:pointer}
     margin-bottom:0;
   }
   /* Last td = actions, right aligned */
-  table tbody td:last-child{
+  table:not(.tm-cost-table) tbody td:last-child{
     display:flex!important;
     justify-content:flex-end!important;
     margin-left:auto;
@@ -150,10 +147,10 @@ button{cursor:pointer}
     border:none!important;
   }
   /* hide less important cols */
-  table tbody td.tm-hide-mobile{display:none!important}
+  table:not(.tm-cost-table) tbody td.tm-hide-mobile{display:none!important}
   /* buttons inside table smaller on mobile */
-  table tbody td button{min-height:30px!important;padding:3px 6px!important;font-size:11px!important}
-  table tbody td span[style]{font-size:10px!important}
+  table:not(.tm-cost-table) tbody td button{min-height:30px!important;padding:3px 6px!important;font-size:11px!important}
+  table:not(.tm-cost-table) tbody td span[style]{font-size:10px!important}
 
   /* BADGES inline */
   span[style*="borderRadius:20"]{font-size:10px!important;padding:2px 6px!important}
