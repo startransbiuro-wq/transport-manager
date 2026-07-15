@@ -2813,12 +2813,12 @@ const sendToKSeF=async(inv,company,settings)=>{
   let cryptoKey=null; // not needed, encryption done server-side
   // KSeF 2.0 — Krok 3: wyślij zaszyfrowany token → authenticationToken
   const authData=await ksefCall('/api/v2/auth/ksef-token',{challenge,contextIdentifier:{type:'Nip',value:nip},encryptedToken},null,env);
-  const authRef=authData?.referenceNumber||authData?.authReferenceNumber;
-  if(!authRef)throw new Error(`Brak authRef: ${JSON.stringify(authData).slice(0,300)}`);
+  const authenticationToken=authData?.authenticationToken?.token||authData?.authenticationToken;
+  if(!authenticationToken)throw new Error(`Brak authenticationToken: ${JSON.stringify(authData).slice(0,300)}`);
 
-  // KSeF 2.0 — Krok 4: wymień na accessToken JWT
-  const redeemData=await ksefCall('/api/v2/auth/token/redeem',{referenceNumber:authRef},null,env);
-  const accessToken=redeemData?.accessToken||redeemData?.token;
+  // KSeF 2.0 — Krok 4: wymień authenticationToken na accessToken JWT (token w nagłówku Authorization)
+  const redeemData=await ksefCall('/api/v2/auth/token/redeem',{},authenticationToken,env);
+  const accessToken=redeemData?.accessToken?.token||redeemData?.accessToken;
   if(!accessToken)throw new Error(`Brak accessToken: ${JSON.stringify(redeemData).slice(0,300)}`);
 
   // KSeF 2.0 — Krok 5: wyślij fakturę
