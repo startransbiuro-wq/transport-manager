@@ -2811,10 +2811,23 @@ const sendToKSeF=async(inv,company,settings)=>{
   if(!encData.ok)throw new Error(`Błąd szyfrowania: ${encData.error}`);
   const encryptedToken=encData.encryptedToken;
   let cryptoKey=null; // not needed, encryption done server-side
-  // KSeF 2.0 — Krok 3: wyślij zaszyfrowany token → authenticationToken
+  // KSeF 2.0 — Krok 3: wyślij zaszyfrowany token → authenticationToken + referenceNumber
   const authData=await ksefCall('/api/v2/auth/ksef-token',{challenge,contextIdentifier:{type:'Nip',value:nip},encryptedToken},null,env);
   const authenticationToken=authData?.authenticationToken?.token||authData?.authenticationToken;
+  const referenceNumber=authData?.referenceNumber;
   if(!authenticationToken)throw new Error(`Brak authenticationToken: ${JSON.stringify(authData).slice(0,300)}`);
+  if(!referenceNumber)throw new Error(`Brak referenceNumber: ${JSON.stringify(authData).slice(0,300)}`);
+
+  // KSeF 2.0 — Krok 3b: poczekaj aż uwierzytelnienie się zakończy (status 200), odpytując co 1s, max 15s
+  let statusOk=false;
+  for(let i=0;i<15;i++){
+    await new Promise(r=>setTimeout(r,1000));
+    const statusData=await ksefCall(`/api/v2/auth/${referenceNumber}`,{},authenticationToken,env,'GET');
+    const code=statusData?.status?.code;
+    if(code===200){statusOk=true;break;}
+    if(code&&code>=400)throw new Error(`Błąd uwierzytelniania (status ${code}): ${JSON.stringify(statusData).slice(0,300)}`);
+  }
+  if(!statusOk)throw new Error('Przekroczono czas oczekiwania na uwierzytelnienie KSeF (15s).');
 
   // KSeF 2.0 — Krok 4: wymień authenticationToken na accessToken JWT (token w nagłówku Authorization)
   const redeemData=await ksefCall('/api/v2/auth/token/redeem',{},authenticationToken,env);
