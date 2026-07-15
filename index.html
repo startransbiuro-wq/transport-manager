@@ -315,18 +315,29 @@ const sbFetch=async table=>{
 const sbUpsert=async(table,item)=>{
   const {_sbid,...data}=item;
   if(_sbid){
-    await fetch(`${SB_URL}/rest/v1/${table}?id=eq.${_sbid}`,{
+    const r=await fetch(`${SB_URL}/rest/v1/${table}?id=eq.${_sbid}`,{
       method:'PATCH',headers:{...SB_HEADERS,'Prefer':'return=minimal'},
       body:JSON.stringify({data}),
     });
+    if(!r.ok){
+      const errText=await r.text().catch(()=>'');
+      throw new Error(`Supabase PATCH ${table} failed (${r.status}): ${errText.slice(0,200)}`);
+    }
     return _sbid;
   }else{
     const r=await fetch(`${SB_URL}/rest/v1/${table}`,{
       method:'POST',headers:{...SB_HEADERS,'Prefer':'return=representation'},
       body:JSON.stringify({data}),
     });
+    if(!r.ok){
+      const errText=await r.text().catch(()=>'');
+      throw new Error(`Supabase INSERT ${table} failed (${r.status}): ${errText.slice(0,200)}`);
+    }
     const rows=await r.json();
-    return rows?.[0]?.id;
+    if(!rows?.[0]?.id){
+      throw new Error(`Supabase INSERT ${table} returned no id: ${JSON.stringify(rows).slice(0,200)}`);
+    }
+    return rows[0].id;
   }
 };
 
@@ -416,37 +427,10 @@ const safeSetItem=(key,value,allowStrip=true)=>{
   }
 };
 
-// On startup: aggressively strip ALL base64 images from localStorage to free space
-// Images are stored in Supabase - we only need metadata locally
-(()=>{
-  const STRIP_KEYS=['tm_vehicles','tm_insurance','tm_drivers','tm_repairs','tm_fines','tm_costs','tm_orders','tm_invoices','tm_trips'];
-  const IMAGE_FIELDS=['polisa_img','polisa_docs','reg_docs','cmr_docs','docs','documents','photos','workPermitDocs','invoice_img','order_pdf_page1','doc_file','data'];
-  let freed=false;
-  STRIP_KEYS.forEach(key=>{
-    try{
-      const raw=localStorage.getItem(key);
-      if(!raw)return;
-      const arr=JSON.parse(raw);
-      if(!Array.isArray(arr))return;
-      const cleaned=arr.map(item=>{
-        if(!item||typeof item!=='object')return item;
-        const s={...item};
-        IMAGE_FIELDS.forEach(f=>{
-          if(f==='data')return; // don't strip 'data' at top level - could be non-image
-          if(typeof s[f]==='string'&&s[f].startsWith('data:')&&s[f].length>1000){
-            s[f]=null;freed=true;
-          }
-          if(Array.isArray(s[f])&&s[f].some(d=>d&&typeof d==='object'&&typeof d.data==='string'&&d.data.startsWith('data:')&&d.data.length>1000)){
-            s[f]=s[f].map(d=>({...d,data:null}));freed=true;
-          }
-        });
-        return s;
-      });
-      localStorage.setItem(key,JSON.stringify(cleaned));
-    }catch(e){}
-  });
-  if(freed)console.log('Freed localStorage space by removing cached images');
-})();
+// NOTE: removed aggressive startup image-stripping — it used to wipe base64 images
+// from localStorage on every app load, BEFORE the sync-to-Supabase had a chance to run,
+// which caused permanent data loss for documents/photos that hadn't synced yet.
+// safeSetItem() now handles quota issues safely, on-demand, only for confirmed-synced items.
 const useStore=(key,init)=>{
   const sbTable=SB_TABLE[key];
   const isSingleton=SB_SINGLETON.has(key);
@@ -499,15 +483,19 @@ const useStore=(key,init)=>{
   },[]);
 
   const set=v=>{
+    let syncPromiseResolve;
+    const syncPromise=new Promise(res=>{syncPromiseResolve=res;});
     setData(prev=>{
       const n=typeof v==='function'?v(prev):v;
       // Try to save locally WITHOUT stripping first — only strip as last resort AFTER Supabase sync succeeds
       const savedLocally=safeSetItem(key,JSON.stringify(n),false);
-      if(sbTable)(async()=>{
+      if(!sbTable){syncPromiseResolve({synced:true});return n;}
+      (async()=>{
         try{
           if(isSingleton){
             await sbUpsertSingleton(sbTable,n);
             if(!savedLocally)safeSetItem(key,JSON.stringify(n),true); // now safe to strip if needed, data is in Supabase
+            syncPromiseResolve({synced:true});
           }else{
             const prevArr=Array.isArray(prev)?prev:[];
             const newArr=Array.isArray(n)?n:[];
@@ -538,16 +526,19 @@ const useStore=(key,init)=>{
                 sbDelete(sbTable,old._sbid).catch(()=>{});
               }
             }
+            syncPromiseResolve({synced:allSynced});
           }
         }catch(e){
         console.error('sync:',key,e.message);
         window.__syncError=window.__syncError||{};
         window.__syncError[key]={msg:e.message,time:Date.now()};
         window.dispatchEvent(new CustomEvent('tm-sync-error',{detail:{key,msg:e.message}}));
+        syncPromiseResolve({synced:false,error:e.message});
       }
       })();
       return n;
     });
+    return syncPromise;
   };
 
   return [data,set];
@@ -3733,7 +3724,17 @@ const Fines=({db})=>{
   const [fines,setFines]=db.fines;const [drivers]=db.drivers;const [vehicles]=db.vehicles;
   const [modal,setModal]=useState(false);const [form,setForm]=useState({});const [fs,setFs]=useState('wszystkie');
   const [docPreview,setDocPreview]=useState(null);const [docLoading,setDocLoading]=useState(false);
-  const save=()=>{if(form.id)setFines(p=>p.map(x=>x.id===form.id?{...x,...form}:x));else setFines(p=>[...p,{...form,id:gid(),settled:false,created_at:today()}]);setModal(false)};
+  const [saving,setSaving]=useState(false);
+  const save=async()=>{
+    setSaving(true);
+    const item=form.id?{...form}:{...form,id:gid(),settled:false,created_at:today()};
+    const result=await(form.id?setFines(p=>p.map(x=>x.id===form.id?{...x,...item}:x)):setFines(p=>[...p,item]));
+    setSaving(false);
+    if(result?.synced===false){
+      alert('UWAGA: Mandat zapisany TYLKO lokalnie na tym urządzeniu — nie udało się wysłać do chmury!\n\nBłąd: '+(result.error||'nieznany')+'\n\nSprawdź połączenie z internetem i otwórz ten mandat ponownie aby wymusić ponowną synchronizację (np. edytuj i zapisz jeszcze raz, gdy będzie internet).');
+    }
+    setModal(false);
+  };
   const F=(k,l,t='text',full=false)=>(<div style={full?{gridColumn:'span 2'}:{}}><label style={C.lbl}>{l}</label>{t==='textarea'?<textarea style={{...C.inp,height:55,resize:'vertical'}} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/>:<input style={C.inp} type={t} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/>}</div>);
   const addDoc=e=>{
     setDocLoading(true);
@@ -3808,7 +3809,7 @@ const Fines=({db})=>{
           {!(form.docs||[]).length&&<div style={{fontSize:11,color:'#aaa'}}>Brak dokumentów.</div>}
         </div>
       </div>
-      <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:12,position:'sticky',bottom:0,background:'#fff',paddingTop:10,paddingBottom:6,borderTop:'0.5px solid rgba(0,0,0,0.08)'}}><button style={C.btn} onClick={()=>setModal(false)}>Anuluj</button><button style={C.btnP} onClick={save}>Zapisz</button></div>
+      <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:12,position:'sticky',bottom:0,background:'#fff',paddingTop:10,paddingBottom:6,borderTop:'0.5px solid rgba(0,0,0,0.08)'}}><button style={C.btn} onClick={()=>setModal(false)}>Anuluj</button><button style={C.btnP} onClick={save} disabled={saving}>{saving?<><i className="ti ti-loader-2" style={{animation:'spin 1s linear infinite'}}/> Zapisywanie...</>:'Zapisz'}</button></div>
     </Modal>}
     {docPreview&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10001}} onClick={()=>setDocPreview(null)}>
       <div style={{background:'#fff',borderRadius:14,padding:14,maxWidth:760,width:'95%',maxHeight:'90vh',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
@@ -4639,10 +4640,15 @@ const Finanse=({db})=>{
     e.target.value='';
   };
 
-  const save=()=>{
+  const [saving,setSaving]=useState(false);
+  const save=async()=>{
+    setSaving(true);
     const item={...form,type:costTab};
-    if(form.id)setCosts(p=>p.map(x=>x.id===form.id?{...x,...item}:x));
-    else setCosts(p=>[...p,{...item,id:gid(),created_at:today()}]);
+    const result=await(form.id?setCosts(p=>p.map(x=>x.id===form.id?{...x,...item}:x)):setCosts(p=>[...p,{...item,id:gid(),created_at:today()}]));
+    setSaving(false);
+    if(result?.synced===false){
+      alert('UWAGA: Koszt zapisany TYLKO lokalnie na tym urządzeniu — nie udało się wysłać do chmury!\n\nBłąd: '+(result.error||'nieznany')+'\n\nSprawdź połączenie z internetem i otwórz ten koszt ponownie, edytuj i zapisz jeszcze raz gdy będzie internet.');
+    }
     setModal(false);
   };
   const F=(k,l,t='text',full=false)=>(<div style={full?{gridColumn:'span 2'}:{}}><label style={C.lbl}>{l}</label><input style={C.inp} type={t} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/></div>);
@@ -4920,7 +4926,7 @@ const Finanse=({db})=>{
         <div style={{display:'flex',flexWrap:'wrap',gap:5}}>{costCategories.map(c=><div key={c} style={{display:'flex',alignItems:'center',gap:3,background:'#f5f4f0',borderRadius:20,padding:'2px 10px 2px 11px',fontSize:11}}><span>{c}</span><button style={{background:'none',border:'none',cursor:'pointer',color:'#888',fontSize:13,lineHeight:1,padding:'0 1px'}} onClick={()=>remCat(c)}>×</button></div>)}</div>
       </div>
 
-      <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:12,position:'sticky',bottom:0,background:'#fff',paddingTop:10,paddingBottom:6,borderTop:'0.5px solid rgba(0,0,0,0.08)'}}><button style={C.btn} onClick={()=>setModal(false)}>Anuluj</button><button style={C.btnP} onClick={save}>Zapisz</button></div>
+      <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:12,position:'sticky',bottom:0,background:'#fff',paddingTop:10,paddingBottom:6,borderTop:'0.5px solid rgba(0,0,0,0.08)'}}><button style={C.btn} onClick={()=>setModal(false)}>Anuluj</button><button style={C.btnP} onClick={save} disabled={saving}>{saving?<><i className="ti ti-loader-2" style={{animation:'spin 1s linear infinite'}}/> Zapisywanie...</>:'Zapisz'}</button></div>
     </Modal>}
     {pdfPreview&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10001}} onClick={()=>setPdfPreview(null)}>
       <div style={{background:'#fff',borderRadius:14,padding:14,maxWidth:760,width:'95%',maxHeight:'90vh',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
