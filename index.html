@@ -356,28 +356,63 @@ const sbUpsertSingleton=async(table,obj)=>{
 };
 
 // Safe localStorage write — if quota exceeded, strip large image fields and retry
-const safeSetItem=(key,value)=>{
+const safeSetItem=(key,value,allowStrip=true)=>{
   try{
     localStorage.setItem(key,value);
+    return true;
   }catch(e){
     if(e.name==='QuotaExceededError'||e.code===22||e.code===1014){
+      if(!allowStrip){
+        console.warn('localStorage quota exceeded, deferring strip until sync confirms:',key);
+        return false;
+      }
       try{
         const data=JSON.parse(value);
-        const stripped=Array.isArray(data)?data.map(item=>{
-          const s={...item};
-          ['polisa_img','polisa_docs','reg_docs','cmr_docs','docs','photos','invoice_img','order_pdf_page1','doc_file'].forEach(k=>{
-            if(s[k]&&typeof s[k]==='string'&&s[k].length>5000)s[k]=null;
-            if(Array.isArray(s[k]))s[k]=[];
+        if(!Array.isArray(data)){
+          // Singleton object — can't safely strip, just skip this write
+          console.warn('localStorage quota on singleton, skipping write:',key);
+          return false;
+        }
+        const IMG_FIELDS=['polisa_img','polisa_docs','reg_docs','cmr_docs','docs','photos','invoice_img','order_pdf_page1','doc_file'];
+        // Build list of {itemIndex, field, size} for items that ARE confirmed synced to Supabase (_sbid present)
+        // Only these are safe to strip locally — data still exists remotely.
+        const candidates=[];
+        data.forEach((item,idx)=>{
+          if(!item._sbid)return; // never strip unsynced-only data — it would be lost forever
+          IMG_FIELDS.forEach(f=>{
+            const v=item[f];
+            if(typeof v==='string'&&v.length>5000)candidates.push({idx,field:f,size:v.length,isArr:false});
+            else if(Array.isArray(v)&&v.length>0){
+              const arrSize=JSON.stringify(v).length;
+              if(arrSize>5000)candidates.push({idx,field:f,size:arrSize,isArr:true});
+            }
           });
-          return s;
-        }):data;
-        localStorage.setItem(key,JSON.stringify(stripped));
-        console.warn('localStorage quota: stripped images from',key);
+        });
+        // Strip largest-first, incrementally, re-testing localStorage.setItem after each removal
+        candidates.sort((a,b)=>b.size-a.size);
+        const working=data.map(item=>({...item}));
+        let saved=false;
+        for(const c of candidates){
+          working[c.idx][c.field]=c.isArr?[]:null;
+          try{
+            localStorage.setItem(key,JSON.stringify(working));
+            saved=true;
+            break;
+          }catch(e2){/* keep stripping more */}
+        }
+        if(saved){
+          console.warn('localStorage quota: stripped',candidates.length,'field(s) from Supabase-synced items only (unsynced data untouched):',key);
+          return true;
+        }else{
+          console.warn('localStorage quota: could not fit even after stripping synced items:',key);
+          return false;
+        }
       }catch(e2){
-        try{localStorage.removeItem(key);}catch(e3){}
-        console.warn('localStorage quota: cleared',key);
+        console.warn('localStorage quota: strip attempt failed:',key,e2.message);
+        return false;
       }
     }
+    return false;
   }
 };
 
@@ -466,16 +501,19 @@ const useStore=(key,init)=>{
   const set=v=>{
     setData(prev=>{
       const n=typeof v==='function'?v(prev):v;
-      safeSetItem(key,JSON.stringify(n));
+      // Try to save locally WITHOUT stripping first — only strip as last resort AFTER Supabase sync succeeds
+      const savedLocally=safeSetItem(key,JSON.stringify(n),false);
       if(sbTable)(async()=>{
         try{
           if(isSingleton){
             await sbUpsertSingleton(sbTable,n);
+            if(!savedLocally)safeSetItem(key,JSON.stringify(n),true); // now safe to strip if needed, data is in Supabase
           }else{
             const prevArr=Array.isArray(prev)?prev:[];
             const newArr=Array.isArray(n)?n:[];
             const prevMap=new Map(prevArr.map(x=>[x.id,x]));
             let changed=false;
+            let allSynced=true;
             const withSbids=[...newArr];
             for(let i=0;i<withSbids.length;i++){
               const item=withSbids[i];
@@ -485,11 +523,14 @@ const useStore=(key,init)=>{
                 if(sbid&&!item._sbid){
                   withSbids[i]={...item,_sbid:sbid};
                   changed=true;
+                }else if(!sbid){
+                  allSynced=false; // this item failed to sync — do NOT allow stripping its data
                 }
               }
             }
-            if(changed){
-              safeSetItem(key,JSON.stringify(withSbids));
+            if(changed||!savedLocally){
+              // Only allow stripping (allowStrip=true) if everything that changed actually synced to Supabase
+              safeSetItem(key,JSON.stringify(withSbids),allSynced);
               setData(withSbids);
             }
             for(const old of prevArr){
@@ -1095,11 +1136,28 @@ const Drivers=({db})=>{
   const [docs,setDocs]=useState([]);
   const [pdfPreview,setPdfPreview]=useState(null);
   const [workPermitDocs,setWorkPermitDocs]=useState([]);
-  const addWorkPermitDoc=e=>{Array.from(e.target.files).forEach(f=>{const r=new FileReader();r.onload=ev=>setWorkPermitDocs(p=>[...p,{id:gid(),name:f.name,data:ev.target.result,description:'',uploaded:today()}]);r.readAsDataURL(f)});e.target.value='';};
+  const addWorkPermitDoc=e=>{
+    Array.from(e.target.files).forEach(async f=>{
+      const dataUrl=await new Promise(res=>{const rd=new FileReader();rd.onload=ev=>res(ev.target.result);rd.onerror=()=>res(null);rd.readAsDataURL(f);});
+      if(!dataUrl)return;
+      const url=await sbUploadBase64(dataUrl,f.name,'drivers/work-permits');
+      setWorkPermitDocs(p=>[...p,{id:gid(),name:f.name,data:url||dataUrl,description:'',uploaded:today()}]);
+      if(!url)alert('Nie udało się wysłać pliku do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
+    });
+    e.target.value='';
+  };
   const updWorkPermitDoc=(id,desc)=>setWorkPermitDocs(p=>p.map(d=>d.id===id?{...d,description:desc}:d));
   const remWorkPermitDoc=id=>setWorkPermitDocs(p=>p.filter(d=>d.id!==id));
   const save=()=>{const autoStatus=(form.employment_end&&form.employment_end<today())?'nieaktywny':(form.status||'aktywny');const item={...form,status:autoStatus,documents:docs,workPermitDocs};if(modal==='add')setDrivers(p=>[...p,{...item,id:gid(),created_at:today()}]);else setDrivers(p=>p.map(x=>x.id===form.id?{...x,...item}:x));setModal(null)};
-  const hf=e=>{Array.from(e.target.files).forEach(f=>{const r=new FileReader();r.onload=ev=>setDocs(p=>[...p,{name:f.name,data:ev.target.result,uploaded:today()}]);r.readAsDataURL(f)})};
+  const hf=e=>{
+    Array.from(e.target.files).forEach(async f=>{
+      const dataUrl=await new Promise(res=>{const rd=new FileReader();rd.onload=ev=>res(ev.target.result);rd.onerror=()=>res(null);rd.readAsDataURL(f);});
+      if(!dataUrl)return;
+      const url=await sbUploadBase64(dataUrl,f.name,'drivers/docs');
+      setDocs(p=>[...p,{name:f.name,data:url||dataUrl,uploaded:today()}]);
+      if(!url)alert('Nie udało się wysłać pliku do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
+    });
+  };
   const F=(k,l,t='text',full=false)=>(<div style={full?{gridColumn:'span 2'}:{}}><label style={C.lbl}>{l}</label><input style={C.inp} type={t} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/></div>);
 
   // Generic single-PDF field with upload + expiry date
@@ -1109,9 +1167,11 @@ const Drivers=({db})=>{
     const acceptAttr=allowImages?'.pdf,application/pdf,image/*':'.pdf,application/pdf';
     const handleUpload=async e=>{
       const file=e.target.files[0];if(!file)return;
-      const rd=new FileReader();
-      rd.onload=ev=>setForm(p=>({...p,[fileKey]:ev.target.result,[`${fileKey}_name`]:file.name}));
-      rd.readAsDataURL(file);
+      const dataUrl=await new Promise(res=>{const rd=new FileReader();rd.onload=ev=>res(ev.target.result);rd.onerror=()=>res(null);rd.readAsDataURL(file);});
+      if(!dataUrl){e.target.value='';return;}
+      const url=await sbUploadBase64(dataUrl,file.name,'drivers/pdf-fields');
+      setForm(p=>({...p,[fileKey]:url||dataUrl,[`${fileKey}_name`]:file.name}));
+      if(!url)alert('Nie udało się wysłać pliku do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
       e.target.value='';
     };
     return(
@@ -1314,8 +1374,11 @@ const PayrollRecords=({db})=>{
     let remaining=files.length;
     files.forEach(f=>{
       const rd=new FileReader();
-      rd.onload=ev=>{
-        setForm(p=>({...p,documents:[...(p.documents||[]),{id:gid(),name:f.name,data:ev.target.result,description:''}]}));
+      rd.onload=async ev=>{
+        const dataUrl=ev.target.result;
+        const url=await sbUploadBase64(dataUrl,f.name,'payroll');
+        setForm(p=>({...p,documents:[...(p.documents||[]),{id:gid(),name:f.name,data:url||dataUrl,description:''}]}));
+        if(!url)alert('Nie udało się wysłać pliku do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
         remaining--;if(remaining===0)setFileLoading(false);
       };
       rd.onerror=()=>{remaining--;if(remaining===0)setFileLoading(false);};
@@ -1802,11 +1865,21 @@ const Repairs=({db,initialFilter,onFilterApplied})=>{
   const [invLoading,setInvLoading]=useState(false);
   const save=()=>{if(form.id)setRepairs(p=>p.map(x=>x.id===form.id?{...x,...form}:x));else setRepairs(p=>[...p,{...form,id:gid(),created_at:today()}]);setModal(false)};
   const hInv=async e=>{const file=e.target.files[0];if(!file)return;setInvLoading(true);
-    try{if(file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf')){
-      const buf=await file.arrayBuffer();if(!window.pdfjsLib){await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';}
-      const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;const page=await pdf.getPage(1);const vp=page.getViewport({scale:0.8});const canvas=document.createElement('canvas');canvas.width=vp.width;canvas.height=vp.height;await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
-      setForm(p=>({...p,invoice_img:canvas.toDataURL('image/jpeg',0.85),invoice_name:file.name,invoice_file_type:'pdf'}));
-    }else{const rd=new FileReader();rd.onload=ev=>setForm(p=>({...p,invoice_img:ev.target.result,invoice_name:file.name,invoice_file_type:'image'}));rd.readAsDataURL(file);}
+    try{
+      let dataUrl,fileType;
+      if(file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf')){
+        const buf=await file.arrayBuffer();if(!window.pdfjsLib){await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';}
+        const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;const page=await pdf.getPage(1);const vp=page.getViewport({scale:0.8});const canvas=document.createElement('canvas');canvas.width=vp.width;canvas.height=vp.height;await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+        dataUrl=canvas.toDataURL('image/jpeg',0.85);fileType='pdf';
+      }else{
+        dataUrl=await new Promise(res=>{const rd=new FileReader();rd.onload=ev=>res(ev.target.result);rd.onerror=()=>res(null);rd.readAsDataURL(file);});
+        fileType='image';
+      }
+      if(dataUrl){
+        const url=await sbUploadBase64(dataUrl,file.name,'repairs');
+        setForm(p=>({...p,invoice_img:url||dataUrl,invoice_name:file.name,invoice_file_type:fileType}));
+        if(!url)alert('Nie udało się wysłać pliku do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
+      }
     }catch(err){alert('Błąd: '+err.message);}setInvLoading(false);e.target.value='';};
   const addRT=()=>{const t=newType.trim();if(!t||repairTypes.includes(t))return;setRepairTypes(p=>[...p,t]);setNewType('')};
   const remRT=t=>{setRepairTypes(p=>p.filter(x=>x!==t));if(form.repair_type===t)setForm(p=>({...p,repair_type:''}))};
@@ -2012,20 +2085,29 @@ const Orders=({db,onCreateInvoice,onOpenInvoicePreview})=>{
   const save=()=>{const item={...form,extras};if(form.id)setOrders(p=>p.map(x=>x.id===form.id?{...x,...item}:x));else setOrders(p=>[...p,{...item,id:gid(),number:`ZL/${new Date().getFullYear()}/${String(p.length+1).padStart(4,'0')}`,created_at:today()}]);setModal(false)};
   const hPdf=async e=>{const file=e.target.files[0];if(!file)return;setPdfLoading(true);
     try{
+      let dataUrl,pages=1;
       if(file.type.startsWith('image/')){
-        // Compress image before storing
-        const img=new Image();const url=URL.createObjectURL(file);
-        img.onload=()=>{
-          const maxW=1200;const scale=Math.min(1,maxW/img.width);
-          const canvas=document.createElement('canvas');canvas.width=img.width*scale;canvas.height=img.height*scale;
-          canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
-          setForm(p=>({...p,order_pdf_page1:canvas.toDataURL('image/jpeg',0.8),order_pdf_name:file.name,order_pdf_pages:1}));
-          URL.revokeObjectURL(url);setPdfLoading(false);
-        };img.src=url;return;
+        dataUrl=await new Promise(res=>{
+          const img=new Image();const url=URL.createObjectURL(file);
+          img.onload=()=>{
+            const maxW=1200;const scale=Math.min(1,maxW/img.width);
+            const canvas=document.createElement('canvas');canvas.width=img.width*scale;canvas.height=img.height*scale;
+            canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+            URL.revokeObjectURL(url);res(canvas.toDataURL('image/jpeg',0.8));
+          };
+          img.onerror=()=>{URL.revokeObjectURL(url);res(null);};
+          img.src=url;
+        });
+      }else{
+        const buf=await file.arrayBuffer();if(!window.pdfjsLib){await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';}
+        const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;const page=await pdf.getPage(1);const vp=page.getViewport({scale:1.5});const canvas=document.createElement('canvas');canvas.width=vp.width;canvas.height=vp.height;await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+        dataUrl=canvas.toDataURL('image/jpeg',0.82);pages=pdf.numPages;
       }
-      const buf=await file.arrayBuffer();if(!window.pdfjsLib){await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';}
-      const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;const page=await pdf.getPage(1);const vp=page.getViewport({scale:1.5});const canvas=document.createElement('canvas');canvas.width=vp.width;canvas.height=vp.height;await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
-      setForm(p=>({...p,order_pdf_page1:canvas.toDataURL('image/jpeg',0.82),order_pdf_name:file.name,order_pdf_pages:pdf.numPages}));
+      if(dataUrl){
+        const url=await sbUploadBase64(dataUrl,file.name,'orders/pdf');
+        setForm(p=>({...p,order_pdf_page1:url||dataUrl,order_pdf_name:file.name,order_pdf_pages:pages}));
+        if(!url)alert('Nie udało się wysłać dokumentu do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
+      }
     }catch(err){alert('Błąd: '+err.message);}setPdfLoading(false);e.target.value='';};
   const F=(k,l,t='text',full=false)=>(<div style={full?{gridColumn:'span 2'}:{}}><label style={C.lbl}>{l}</label>{t==='textarea'?<textarea style={{...C.inp,height:55,resize:'vertical'}} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/>:<input style={C.inp} type={t} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))} onKeyDown={handleEnterNext}/>}</div>);
   const filtered=orders.filter(o=>{
@@ -2382,18 +2464,23 @@ const Orders=({db,onCreateInvoice,onOpenInvoicePreview})=>{
         <div style={C.secT}>Dokumenty CMR</div>
         <div style={{display:'flex',gap:7,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
           <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden'}}><i className="ti ti-upload"/> Wgraj PDF/zdjęcie CMR<input type="file" multiple accept=".pdf,application/pdf,image/*" onChange={e=>{
-            Array.from(e.target.files).forEach(f=>{
-              const rd=new FileReader();
-              rd.onload=ev=>setForm(p=>({...p,cmr_docs:[...(p.cmr_docs||[]),{id:gid(),name:f.name,data:ev.target.result}]}));
-              rd.readAsDataURL(f);
+            Array.from(e.target.files).forEach(async f=>{
+              const dataUrl=await new Promise(res=>{const rd=new FileReader();rd.onload=ev=>res(ev.target.result);rd.onerror=()=>res(null);rd.readAsDataURL(f);});
+              if(!dataUrl)return;
+              const url=await sbUploadBase64(dataUrl,f.name,'orders/cmr');
+              setForm(p=>({...p,cmr_docs:[...(p.cmr_docs||[]),{id:gid(),name:f.name,data:url||dataUrl}]}));
+              if(!url)alert('Nie udało się wysłać CMR do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
             });
             e.target.value='';
           }} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}}/></label>
-          <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden'}}><i className="ti ti-camera"/> Zrób zdjęcie CMR<input type="file" accept="image/*" capture="environment" onChange={e=>{
+          <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden'}}><i className="ti ti-camera"/> Zrób zdjęcie CMR<input type="file" accept="image/*" capture="environment" onChange={async e=>{
             const f=e.target.files[0];if(!f)return;
-            const rd=new FileReader();
-            rd.onload=ev=>setForm(p=>({...p,cmr_docs:[...(p.cmr_docs||[]),{id:gid(),name:f.name,data:ev.target.result}]}));
-            rd.readAsDataURL(f);
+            const dataUrl=await new Promise(res=>{const rd=new FileReader();rd.onload=ev=>res(ev.target.result);rd.onerror=()=>res(null);rd.readAsDataURL(f);});
+            if(dataUrl){
+              const url=await sbUploadBase64(dataUrl,f.name,'orders/cmr');
+              setForm(p=>({...p,cmr_docs:[...(p.cmr_docs||[]),{id:gid(),name:f.name,data:url||dataUrl}]}));
+              if(!url)alert('Nie udało się wysłać CMR do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
+            }
             e.target.value='';
           }} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}}/></label>
         </div>
@@ -2707,7 +2794,7 @@ const sendToKSeF=async(inv,company,settings)=>{
   if(!nip)throw new Error('Brak NIP sprzedawcy. Uzupełnij w Danych firmy.');
 
   // KSeF 2.0 — Krok 1: challenge
-  const challengeData=await ksefCall('/api/v2/auth/challenge',{contextNip:nip},null,env);
+  const challengeData=await ksefCall('/api/v2/auth/challenge',{contextIdentifier:{type:'Nip',value:nip}},null,env);
   const challenge=challengeData?.challenge||challengeData?.authChallenge;
   if(!challenge)throw new Error(`Brak challenge: ${JSON.stringify(challengeData).slice(0,300)}`);
 
@@ -2725,7 +2812,7 @@ const sendToKSeF=async(inv,company,settings)=>{
   const encryptedToken=encData.encryptedToken;
   let cryptoKey=null; // not needed, encryption done server-side
   // KSeF 2.0 — Krok 3: wyślij zaszyfrowany token → authenticationToken
-  const authData=await ksefCall('/api/v2/auth/ksef-token',{challenge,contextNip:nip,encryptedToken},null,env);
+  const authData=await ksefCall('/api/v2/auth/ksef-token',{challenge,contextIdentifier:{type:'Nip',value:nip},encryptedToken},null,env);
   const authRef=authData?.referenceNumber||authData?.authReferenceNumber;
   if(!authRef)throw new Error(`Brak authRef: ${JSON.stringify(authData).slice(0,300)}`);
 
@@ -3638,15 +3725,21 @@ const Fines=({db})=>{
   const addDoc=e=>{
     setDocLoading(true);
     Array.from(e.target.files).forEach(async f=>{
+      let dataUrl;
       if(f.type.startsWith('image/')){
-        const compressed=await compressImage(f);
-        setForm(p=>({...p,docs:[...(p.docs||[]),{id:gid(),name:f.name,data:compressed||''}]}));
-        setDocLoading(false);
+        dataUrl=await compressImage(f);
       }else{
-        const rd=new FileReader();
-        rd.onload=ev=>{setForm(p=>({...p,docs:[...(p.docs||[]),{id:gid(),name:f.name,data:ev.target.result}]}));setDocLoading(false);};
-        rd.readAsDataURL(f);
+        dataUrl=await new Promise(res=>{const rd=new FileReader();rd.onload=ev=>res(ev.target.result);rd.onerror=()=>res(null);rd.readAsDataURL(f);});
       }
+      if(!dataUrl){setDocLoading(false);return;}
+      const url=await sbUploadBase64(dataUrl,f.name,'fines');
+      if(url){
+        setForm(p=>({...p,docs:[...(p.docs||[]),{id:gid(),name:f.name,data:url}]}));
+      }else{
+        setForm(p=>({...p,docs:[...(p.docs||[]),{id:gid(),name:f.name,data:dataUrl}]}));
+        alert('Nie udało się wysłać pliku do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
+      }
+      setDocLoading(false);
     });
     e.target.value='';
   };
@@ -4052,7 +4145,13 @@ const Trips=({db})=>{
     let remaining=list.length;
     list.forEach(f=>{
       const rd=new FileReader();
-      rd.onload=ev=>{setPhotos(p=>[...p,{id:gid(),name:f.name,data:ev.target.result}]);remaining--;if(remaining===0)setPhotoLoading(false);};
+      rd.onload=async ev=>{
+        const dataUrl=ev.target.result;
+        const url=await sbUploadBase64(dataUrl,f.name,'trips/photos');
+        setPhotos(p=>[...p,{id:gid(),name:f.name,data:url||dataUrl}]);
+        if(!url)alert('Nie udało się wysłać zdjęcia do chmury. Zapisano tymczasowo lokalnie — spróbuj ponownie z internetem.');
+        remaining--;if(remaining===0)setPhotoLoading(false);
+      };
       rd.onerror=()=>{remaining--;if(remaining===0)setPhotoLoading(false);};
       rd.readAsDataURL(f);
     });
@@ -4497,23 +4596,33 @@ const Finanse=({db})=>{
 
   const hFile=async e=>{
     const file=e.target.files[0];if(!file)return;setFileLoading(true);
+    let dataUrl;
     if(file.type.startsWith('image/')){
-      const img=new Image();const url=URL.createObjectURL(file);
-      img.onload=()=>{
-        const maxW=1200;const scale=Math.min(1,maxW/img.width);
-        const canvas=document.createElement('canvas');canvas.width=img.width*scale;canvas.height=img.height*scale;
-        canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
-        setForm(p=>({...p,doc_file:canvas.toDataURL('image/jpeg',0.78),doc_file_name:file.name}));
-        URL.revokeObjectURL(url);setFileLoading(false);
-      };
-      img.onerror=()=>{URL.revokeObjectURL(url);setFileLoading(false);};
-      img.src=url;
+      dataUrl=await new Promise(res=>{
+        const img=new Image();const url=URL.createObjectURL(file);
+        img.onload=()=>{
+          const maxW=1200;const scale=Math.min(1,maxW/img.width);
+          const canvas=document.createElement('canvas');canvas.width=img.width*scale;canvas.height=img.height*scale;
+          canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+          URL.revokeObjectURL(url);res(canvas.toDataURL('image/jpeg',0.78));
+        };
+        img.onerror=()=>{URL.revokeObjectURL(url);res(null);};
+        img.src=url;
+      });
     }else{
-      const rd=new FileReader();
-      rd.onload=ev=>{setForm(p=>({...p,doc_file:ev.target.result,doc_file_name:file.name}));setFileLoading(false);};
-      rd.onerror=()=>setFileLoading(false);
-      rd.readAsDataURL(file);
+      dataUrl=await new Promise(res=>{const rd=new FileReader();rd.onload=ev=>res(ev.target.result);rd.onerror=()=>res(null);rd.readAsDataURL(file);});
     }
+    if(!dataUrl){setFileLoading(false);return;}
+    // Upload to Supabase Storage — keep only a small URL locally, not the full base64
+    const url=await sbUploadBase64(dataUrl,file.name,'costs');
+    if(url){
+      setForm(p=>({...p,doc_file:url,doc_file_name:file.name}));
+    }else{
+      // Storage upload failed (e.g. offline) — fall back to local base64 so nothing is lost this session
+      setForm(p=>({...p,doc_file:dataUrl,doc_file_name:file.name}));
+      alert('Nie udało się wysłać pliku do chmury (brak internetu?). Plik jest tymczasowo zapisany lokalnie — zapisz koszt i spróbuj ponownie później, gdy będzie internet.');
+    }
+    setFileLoading(false);
     e.target.value='';
   };
 
@@ -4722,7 +4831,7 @@ const Finanse=({db})=>{
           <td style={C.td}>{costTab==='realne'&&<button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,also_accountant:!x.also_accountant}:x))} style={{...bdg(c.also_accountant?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10}}>{c.also_accountant?'✓ Księgowy':'– Księgowy'}</button>}{costTab==='księgowe'&&c.also_accountant&&<span style={{...bdg('blue'),fontSize:10}}>z realnych</span>}</td>
           <td style={C.td}><button onClick={()=>setCosts(p=>p.map(x=>x.id===c.id?{...x,ksef:!x.ksef}:x))} style={{...bdg(c.ksef?'green':'gray'),cursor:'pointer',border:'none',padding:'2px 8px',borderRadius:20,fontSize:10}}>{c.ksef?'✓ KSeF':'– KSeF'}</button></td>
           <td style={C.td}>{c.doc_file?<button style={{...C.btn,padding:'2px 5px',color:'#185FA5'}} onClick={()=>setPdfPreview({data:c.doc_file,name:c.doc_file_name})} title="Podgląd"><i className="ti ti-file-type-pdf"/></button>:<span style={{color:'#aaa',fontSize:10}}>–</span>}</td>
-          <td style={C.td}><button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setForm(c);setManualCat(!costCategories.includes(c.category)&&!!c.category);setModal(true)}}><i className="ti ti-edit"/></button><button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setCosts(p=>p.filter(x=>x.id!==c.id))}><i className="ti ti-trash"/></button></td>
+          <td style={C.td}><button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setForm(c);setManualCat(!costCategories.includes(c.category)&&!!c.category);setModal(true)}}><i className="ti ti-edit"/></button><button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>{if(c.doc_file&&c.doc_file.includes(BUCKET))sbDeleteFile(c.doc_file).catch(()=>{});setCosts(p=>p.filter(x=>x.id!==c.id));}}><i className="ti ti-trash"/></button></td>
         </tr>))}</tbody>
       </table>
       {monthCosts.length===0&&<div style={{textAlign:'center',padding:20,color:'#888',fontSize:11}}>Brak kosztów w tym miesiącu — {costTab==='realne'?'Koszty realne':'Koszty do księgowego'}.</div>}
@@ -4896,7 +5005,7 @@ const Settings=({db})=>{
             }catch(e){results+='DIRECT ERROR: '+e.message+'\n\n';}
             // Test 2: via proxy
             try{
-              const r=await fetch(KSEF_PROXY,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},body:JSON.stringify({env,path:'/api/v2/auth/challenge',method:'POST',body:{contextNip:nip},token:null})});
+              const r=await fetch(KSEF_PROXY,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},body:JSON.stringify({env,path:'/api/v2/auth/challenge',method:'POST',body:{contextIdentifier:{type:'Nip',value:nip}},token:null})});
               const data=await r.json();
               results+='VIA PROXY /api/v2/auth/challenge:\nHTTP '+data.status+': '+JSON.stringify(data.data).slice(0,300)+'\n';
             }catch(e){results+='PROXY ERROR: '+e.message+'\n';}
