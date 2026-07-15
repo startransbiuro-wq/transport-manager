@@ -498,7 +498,12 @@ const useStore=(key,init)=>{
               }
             }
           }
-        }catch(e){console.error('sync:',key,e.message);}
+        }catch(e){
+        console.error('sync:',key,e.message);
+        window.__syncError=window.__syncError||{};
+        window.__syncError[key]={msg:e.message,time:Date.now()};
+        window.dispatchEvent(new CustomEvent('tm-sync-error',{detail:{key,msg:e.message}}));
+      }
       })();
       return n;
     });
@@ -2708,17 +2713,17 @@ const sendToKSeF=async(inv,company,settings)=>{
 
   // KSeF 2.0 — Krok 2: pobierz klucz publiczny i zaszyfruj token
   const pkData=await ksefCall('/api/v2/security/public-key-certificates',{},null,env,'GET');
-  const pkPem=pkData?.publicKey||pkData?.[0]?.publicKey||(Array.isArray(pkData?.certificates)&&pkData.certificates[0]?.key);
-  if(!pkPem)throw new Error(`Brak klucza publicznego KSeF: ${JSON.stringify(pkData).slice(0,300)}`);
-
-  const pemBody=pkPem.replace(/-----[^-]+-----/g,'').replace(/\s/g,'');
-  const binaryKey=Uint8Array.from(atob(pemBody),c=>c.charCodeAt(0));
-  const cryptoKey=await crypto.subtle.importKey('spki',binaryKey,{name:'RSA-OAEP',hash:'SHA-256'},false,['encrypt']);
-  const timestamp=new Date().toISOString();
-  const tokenPayload=`${ksefToken}|${timestamp}`;
-  const enc=await crypto.subtle.encrypt({name:'RSA-OAEP'},cryptoKey,new TextEncoder().encode(tokenPayload));
-  const encryptedToken=btoa(String.fromCharCode(...new Uint8Array(enc)));
-
+  // Szyfrowanie tokenu robimy przez Edge Function (X.509 cert wymaga parsowania DER)
+  const encResp=await fetch(KSEF_PROXY,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},
+    body:JSON.stringify({env,ksefTokenToEncrypt:ksefToken,contextNip:nip}),
+  });
+  if(!encResp.ok)throw new Error(`Błąd szyfrowania tokenu: HTTP ${encResp.status}`);
+  const encData=await encResp.json();
+  if(!encData.ok)throw new Error(`Błąd szyfrowania: ${encData.error}`);
+  const encryptedToken=encData.encryptedToken;
+  let cryptoKey=null; // not needed, encryption done server-side
   // KSeF 2.0 — Krok 3: wyślij zaszyfrowany token → authenticationToken
   const authData=await ksefCall('/api/v2/auth/ksef-token',{challenge,contextNip:nip,encryptedToken},null,env);
   const authRef=authData?.referenceNumber||authData?.authReferenceNumber;
@@ -3632,10 +3637,16 @@ const Fines=({db})=>{
   const F=(k,l,t='text',full=false)=>(<div style={full?{gridColumn:'span 2'}:{}}><label style={C.lbl}>{l}</label>{t==='textarea'?<textarea style={{...C.inp,height:55,resize:'vertical'}} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/>:<input style={C.inp} type={t} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/>}</div>);
   const addDoc=e=>{
     setDocLoading(true);
-    Array.from(e.target.files).forEach(f=>{
-      const rd=new FileReader();
-      rd.onload=ev=>{setForm(p=>({...p,docs:[...(p.docs||[]),{id:gid(),name:f.name,data:ev.target.result}]}));setDocLoading(false);};
-      rd.readAsDataURL(f);
+    Array.from(e.target.files).forEach(async f=>{
+      if(f.type.startsWith('image/')){
+        const compressed=await compressImage(f);
+        setForm(p=>({...p,docs:[...(p.docs||[]),{id:gid(),name:f.name,data:compressed||''}]}));
+        setDocLoading(false);
+      }else{
+        const rd=new FileReader();
+        rd.onload=ev=>{setForm(p=>({...p,docs:[...(p.docs||[]),{id:gid(),name:f.name,data:ev.target.result}]}));setDocLoading(false);};
+        rd.readAsDataURL(f);
+      }
     });
     e.target.value='';
   };
@@ -5678,10 +5689,39 @@ const UserManagement=({currentUser})=>{
 function App(){
   const [active,setActive]=useState('dashboard');
   const [sbStatus,setSbStatus]=useState('connecting');
+  const [syncErrors,setSyncErrors]=useState([]);
   const [currentUser,setCurrentUser]=useState(()=>{
     // Restore session from localStorage
     try{const s=localStorage.getItem('tm_session');return s?JSON.parse(s):null;}catch{return null;}
   });
+
+  useEffect(()=>{
+    const onSyncError=(e)=>{
+      setSyncErrors(p=>{
+        const key=e.detail.key;
+        const filtered=p.filter(x=>x.key!==key);
+        return[...filtered,{key,msg:e.detail.msg,id:gid()}];
+      });
+    };
+    window.addEventListener('tm-sync-error',onSyncError);
+    return()=>window.removeEventListener('tm-sync-error',onSyncError);
+  },[]);
+
+  const SyncErrorBanner=()=>{
+    if(syncErrors.length===0)return null;
+    const KEY_LABELS={tm_fines:'Mandaty',tm_costs:'Koszty',tm_trips:'Wyjazdy',tm_drivers:'Kierowcy',tm_vehicles:'Pojazdy',tm_repairs:'Naprawy',tm_orders:'Zlecenia',tm_invoices:'Faktury',tm_contractors:'Kontrahenci',tm_insurance:'Ubezpieczenia',tm_payroll:'Wypłaty',tm_todos:'Zadania'};
+    return(<div style={{position:'fixed',bottom:16,right:16,zIndex:99999,maxWidth:360,display:'flex',flexDirection:'column',gap:6}}>
+      {syncErrors.map(err=><div key={err.id} style={{background:'#FCEBEB',border:'1px solid #F09595',borderRadius:10,padding:'10px 12px',boxShadow:'0 4px 16px rgba(0,0,0,0.15)'}}>
+        <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+          <i className="ti ti-alert-triangle" style={{color:'#A32D2D'}}/>
+          <span style={{fontSize:12,fontWeight:600,color:'#A32D2D'}}>Błąd zapisu: {KEY_LABELS[err.key]||err.key}</span>
+          <button style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#A32D2D'}} onClick={()=>setSyncErrors(p=>p.filter(x=>x.id!==err.id))}><i className="ti ti-x"/></button>
+        </div>
+        <div style={{fontSize:11,color:'#854F0B'}}>{err.msg.includes('too large')||err.msg.includes('payload')||err.msg.includes('413')?'Dane są zbyt duże (prawdopodobnie zdjęcie/dokument). Zmniejsz rozmiar pliku i spróbuj ponownie.':err.msg}</div>
+        <div style={{fontSize:10,color:'#888',marginTop:4}}>Dane zapisane tylko lokalnie na tym urządzeniu — nie zsynchronizowane.</div>
+      </div>)}
+    </div>);
+  };
 
   useEffect(()=>{
     fetch(`${SB_URL}/rest/v1/orders?select=id&limit=1`,{headers:SB_HEADERS})
@@ -5787,6 +5827,7 @@ function App(){
   // Bottom nav shows max 6 items, rest accessible via "Więcej" or scroll
   const bottomNavMods=visibleMods.filter(m=>m.mobile);
   return(<div style={C.app}>
+    <SyncErrorBanner/>
     <aside style={{...C.sidebar,overflowY:'auto'}}>
       <div style={{padding:'14px 14px 12px',borderBottom:'0.5px solid rgba(0,0,0,0.08)'}}>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
