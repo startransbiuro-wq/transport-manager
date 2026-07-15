@@ -2545,17 +2545,28 @@ const Orders=({db,onCreateInvoice,onOpenInvoicePreview})=>{
 
 
 // ─── KSEF HELPERS ─────────────────────────────────────────────────────────────
+const KSEF_URLS={prod:'https://api.ksef.mf.gov.pl',test:'https://api-test.ksef.mf.gov.pl',demo:'https://api-demo.ksef.mf.gov.pl'};
 const KSEF_PROXY=`${SB_URL}/functions/v1/ksef-proxy`;
 const ksefCall=async(path,body,token,env,method='POST')=>{
-  const r=await fetch(KSEF_PROXY,{
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},
-    body:JSON.stringify({env:env||'test',path,method,body,token}),
-  });
-  if(!r.ok){const t=await r.text();throw new Error(`Edge Function error ${r.status}: ${t.slice(0,300)}`);}
-  const res=await r.json();
-  if(!res.ok)throw new Error(`KSeF ${res.status}: ${JSON.stringify(res.data).slice(0,300)}`);
-  return res.data;
+  const base=KSEF_URLS[env]||KSEF_URLS.prod;
+  // Try direct first, fallback to proxy
+  const headers={'Content-Type':'application/json','Accept':'application/json'};
+  if(token)headers['Authorization']=`Bearer ${token}`;
+  try{
+    const r=await fetch(`${base}${path}`,{method,headers,body:(method!=='GET'&&body&&Object.keys(body).length>0)?JSON.stringify(body):undefined});
+    if(!r.ok){const t=await r.text();throw new Error(`KSeF ${r.status}: ${t.slice(0,300)}`);}
+    return await r.json();
+  }catch(e){
+    // If direct fails (CORS), use proxy
+    if(e.message.includes('Failed to fetch')||e.message.includes('CORS')){
+      const r2=await fetch(KSEF_PROXY,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},body:JSON.stringify({env,path,method,body,token})});
+      if(!r2.ok){const t=await r2.text();throw new Error(`Proxy error ${r2.status}: ${t.slice(0,300)}`);}
+      const res=await r2.json();
+      if(!res.ok)throw new Error(`KSeF ${res.status}: ${JSON.stringify(res.data).slice(0,300)}`);
+      return res.data;
+    }
+    throw e;
+  }
 };
 
 const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -4872,31 +4883,22 @@ const Settings=({db})=>{
           <button style={{...C.btn,marginTop:8}} onClick={async()=>{
             const co=Array.isArray(company)?company[0]:company;
             const nip=(co?.nip||'').replace(/[^0-9]/g,'');
-            const token=loc.ksef_token||settings.ksef_token||'';
             const env=loc.ksef_env||'test';
-            if(!token){alert('Wpisz token KSeF.');return;}
-            if(!nip){alert('Uzupełnij NIP w Danych firmy. NIP znaleziony: '+JSON.stringify(co));return;}
-            // Try multiple endpoints to find which works
-            const endpoints=[
-              {method:'GET',path:'/api/common/Status'},
-              {method:'GET',path:'/api/online/Session/Status'},
-              {method:'POST',path:'/api/online/Session/AuthorisationChallenge',body:{contextIdentifier:{type:'onip',identifier:nip}}},
-              {method:'GET',path:'/openapi.yaml'},
-            ];
-            let results='NIP: '+nip+'\nEnv: '+env+'\n\n';
-            for(const ep of endpoints){
-              try{
-                const r=await fetch(`${SB_URL}/functions/v1/ksef-proxy`,{
-                  method:'POST',
-                  headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},
-                  body:JSON.stringify({env,path:ep.path,method:ep.method,body:ep.body||{},token:null}),
-                });
-                const data=await r.json();
-                results+=`${ep.method} ${ep.path}\n→ HTTP ${data.status}: ${JSON.stringify(data.data).slice(0,150)}\n\n`;
-              }catch(e){
-                results+=`${ep.method} ${ep.path}\n→ ERROR: ${e.message}\n\n`;
-              }
-            }
+            const base=(KSEF_URLS||{prod:'https://api.ksef.mf.gov.pl',test:'https://api-test.ksef.mf.gov.pl'})[env]||'https://api.ksef.mf.gov.pl';
+            if(!nip){alert('Uzupełnij NIP w Danych firmy. Znaleziono: '+JSON.stringify(co));return;}
+            let results='NIP: '+nip+'\nEnv: '+env+'\nBase URL: '+base+'\n\n';
+            // Test 1: direct
+            try{
+              const r=await fetch(`${base}/api/online/Session/AuthorisationChallenge`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contextIdentifier:{type:'onip',identifier:nip}})});
+              const t=await r.text();
+              results+='DIRECT AuthorisationChallenge:\nHTTP '+r.status+': '+t.slice(0,200)+'\n\n';
+            }catch(e){results+='DIRECT ERROR: '+e.message+'\n\n';}
+            // Test 2: via proxy
+            try{
+              const r=await fetch(KSEF_PROXY,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},body:JSON.stringify({env,path:'/api/online/Session/AuthorisationChallenge',method:'POST',body:{contextIdentifier:{type:'onip',identifier:nip}},token:null})});
+              const data=await r.json();
+              results+='VIA PROXY AuthorisationChallenge:\nHTTP '+data.status+': '+JSON.stringify(data.data).slice(0,300)+'\n';
+            }catch(e){results+='PROXY ERROR: '+e.message+'\n';}
             alert(results);
           }}><i className="ti ti-stethoscope"/> Test połączenia KSeF</button>
         </div>
