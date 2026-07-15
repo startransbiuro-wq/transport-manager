@@ -2548,26 +2548,17 @@ const Orders=({db,onCreateInvoice,onOpenInvoicePreview})=>{
 const KSEF_URLS={prod:'https://api.ksef.mf.gov.pl',test:'https://api-test.ksef.mf.gov.pl',demo:'https://api-demo.ksef.mf.gov.pl'};
 const KSEF_PROXY=`${SB_URL}/functions/v1/ksef-proxy`;
 const ksefCall=async(path,body,token,env,method='POST')=>{
-  const base=KSEF_URLS[env]||KSEF_URLS.prod;
-  // Try direct first, fallback to proxy
-  const headers={'Content-Type':'application/json','Accept':'application/json'};
-  if(token)headers['Authorization']=`Bearer ${token}`;
-  try{
-    const r=await fetch(`${base}${path}`,{method,headers,body:(method!=='GET'&&body&&Object.keys(body).length>0)?JSON.stringify(body):undefined});
-    if(!r.ok){const t=await r.text();throw new Error(`KSeF ${r.status}: ${t.slice(0,300)}`);}
-    return await r.json();
-  }catch(e){
-    // If direct fails (CORS), use proxy
-    if(e.message.includes('Failed to fetch')||e.message.includes('CORS')){
-      const r2=await fetch(KSEF_PROXY,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},body:JSON.stringify({env,path,method,body,token})});
-      if(!r2.ok){const t=await r2.text();throw new Error(`Proxy error ${r2.status}: ${t.slice(0,300)}`);}
-      const res=await r2.json();
-      if(!res.ok)throw new Error(`KSeF ${res.status}: ${JSON.stringify(res.data).slice(0,300)}`);
-      return res.data;
-    }
-    throw e;
-  }
+  const r=await fetch(KSEF_PROXY,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},
+    body:JSON.stringify({env:env||'prod',path,method,body:body||{},token}),
+  });
+  if(!r.ok){const t=await r.text();throw new Error(`Proxy ${r.status}: ${t.slice(0,300)}`);}
+  const res=await r.json();
+  if(!res.ok)throw new Error(`KSeF ${res.status}: ${JSON.stringify(res.data).slice(0,400)}`);
+  return res.data;
 };
+
 
 const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
@@ -2704,53 +2695,51 @@ const generateKSeFXML=(inv,company)=>{
 
 // Send invoice to KSeF 2.0 via Supabase Edge Function proxy
 const sendToKSeF=async(inv,company,settings)=>{
-  const env=settings.ksef_env||'test';
+  const env=settings.ksef_env||'prod';
   const nip=(inv.seller_nip||company?.nip||'').replace(/[^0-9]/g,'');
-  const token=settings.ksef_token||'';
-  if(!token)throw new Error('Brak tokenu KSeF. Uzupełnij w Ustawieniach → KSeF.');
+  const ksefToken=settings.ksef_token||'';
+  if(!ksefToken)throw new Error('Brak tokenu KSeF. Uzupełnij w Ustawieniach.');
   if(!nip)throw new Error('Brak NIP sprzedawcy. Uzupełnij w Danych firmy.');
 
-  // KSeF 1.0 — uwierzytelnienie tokenem API
-  // Krok 1: Pobierz wyzwanie
-  const challengeData=await ksefCall('/api/online/Session/AuthorisationChallenge',{
-    contextIdentifier:{type:'onip',identifier:nip},
-  },null,env);
-  const challenge=challengeData?.challenge;
+  // KSeF 2.0 — Krok 1: challenge
+  const challengeData=await ksefCall('/api/v2/auth/challenge',{contextNip:nip},null,env);
+  const challenge=challengeData?.challenge||challengeData?.authChallenge;
   if(!challenge)throw new Error(`Brak challenge: ${JSON.stringify(challengeData).slice(0,300)}`);
 
-  // Krok 2: Inicjuj sesję tokenem
-  const initData=await ksefCall('/api/online/Session/InitToken',{
-    context:{
-      challenge,
-      identifier:{type:'onip',identifier:nip},
-    },
-    token,
-  },null,env);
-  const sessionToken=initData?.sessionToken?.token||initData?.token;
-  if(!sessionToken)throw new Error(`Brak sessionToken: ${JSON.stringify(initData).slice(0,300)}`);
+  // KSeF 2.0 — Krok 2: pobierz klucz publiczny i zaszyfruj token
+  const pkData=await ksefCall('/api/v2/security/public-key-certificates',{},null,env,'GET');
+  const pkPem=pkData?.publicKey||pkData?.[0]?.publicKey||(Array.isArray(pkData?.certificates)&&pkData.certificates[0]?.key);
+  if(!pkPem)throw new Error(`Brak klucza publicznego KSeF: ${JSON.stringify(pkData).slice(0,300)}`);
 
-  // Krok 3: Wyślij fakturę XML
+  const pemBody=pkPem.replace(/-----[^-]+-----/g,'').replace(/\s/g,'');
+  const binaryKey=Uint8Array.from(atob(pemBody),c=>c.charCodeAt(0));
+  const cryptoKey=await crypto.subtle.importKey('spki',binaryKey,{name:'RSA-OAEP',hash:'SHA-256'},false,['encrypt']);
+  const timestamp=new Date().toISOString();
+  const tokenPayload=`${ksefToken}|${timestamp}`;
+  const enc=await crypto.subtle.encrypt({name:'RSA-OAEP'},cryptoKey,new TextEncoder().encode(tokenPayload));
+  const encryptedToken=btoa(String.fromCharCode(...new Uint8Array(enc)));
+
+  // KSeF 2.0 — Krok 3: wyślij zaszyfrowany token → authenticationToken
+  const authData=await ksefCall('/api/v2/auth/ksef-token',{challenge,contextNip:nip,encryptedToken},null,env);
+  const authRef=authData?.referenceNumber||authData?.authReferenceNumber;
+  if(!authRef)throw new Error(`Brak authRef: ${JSON.stringify(authData).slice(0,300)}`);
+
+  // KSeF 2.0 — Krok 4: wymień na accessToken JWT
+  const redeemData=await ksefCall('/api/v2/auth/token/redeem',{referenceNumber:authRef},null,env);
+  const accessToken=redeemData?.accessToken||redeemData?.token;
+  if(!accessToken)throw new Error(`Brak accessToken: ${JSON.stringify(redeemData).slice(0,300)}`);
+
+  // KSeF 2.0 — Krok 5: wyślij fakturę
   const xml=generateKSeFXML(inv,company);
-  const b64=btoa(unescape(encodeURIComponent(xml)));
   const hashVal=await sha256Base64(xml);
+  const b64=btoa(unescape(encodeURIComponent(xml)));
+  const sendData=await ksefCall('/api/v2/invoices/send',{
+    invoiceHash:{fileSize:new TextEncoder().encode(xml).length,hashSHA:{algorithm:'SHA-256',encoding:'Base64',value:hashVal}},
+    invoicePayload:{type:'plain',invoiceBody:b64},
+  },accessToken,env);
 
-  const sendData=await ksefCall('/api/online/Invoice/Send',{
-    invoiceHash:{
-      fileSize:xml.length,
-      hashSHA:{algorithm:'SHA-256',encoding:'Base64',value:hashVal},
-    },
-    invoicePayload:{
-      type:'plain',
-      invoiceBody:b64,
-    },
-  },sessionToken,env);
-
-  const refNo=sendData?.elementReferenceNumber||sendData?.ksefReferenceNumber||sendData?.referenceNumber;
+  const refNo=sendData?.elementReferenceNumber||sendData?.referenceNumber||sendData?.ksefReferenceNumber;
   if(!refNo)throw new Error(`Brak numeru ref: ${JSON.stringify(sendData).slice(0,400)}`);
-
-  // Krok 4: Zakończ sesję
-  try{await ksefCall('/api/online/Session/Terminate',{},sessionToken,env,'GET');}catch(e){console.warn('KSeF session terminate:',e.message);}
-
   return{refNo,xml};
 };
 
@@ -2758,6 +2747,7 @@ const sha256Base64=async(text)=>{
   const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
   return btoa(String.fromCharCode(...new Uint8Array(buf)));
 };
+
 
 const Invoices=({db,pendingInvoice,onClearPending,openPreviewId,onPreviewOpened})=>{
   const [invoices,setInvoices]=db.invoices;const [company]=db.company;const [contractors]=db.contractors;const [orders]=db.orders;const [settings,setSettings]=db.settings;
@@ -4895,9 +4885,9 @@ const Settings=({db})=>{
             }catch(e){results+='DIRECT ERROR: '+e.message+'\n\n';}
             // Test 2: via proxy
             try{
-              const r=await fetch(KSEF_PROXY,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},body:JSON.stringify({env,path:'/api/online/Session/AuthorisationChallenge',method:'POST',body:{contextIdentifier:{type:'onip',identifier:nip}},token:null})});
+              const r=await fetch(KSEF_PROXY,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`,'apikey':SB_KEY},body:JSON.stringify({env,path:'/api/v2/auth/challenge',method:'POST',body:{contextNip:nip},token:null})});
               const data=await r.json();
-              results+='VIA PROXY AuthorisationChallenge:\nHTTP '+data.status+': '+JSON.stringify(data.data).slice(0,300)+'\n';
+              results+='VIA PROXY /api/v2/auth/challenge:\nHTTP '+data.status+': '+JSON.stringify(data.data).slice(0,300)+'\n';
             }catch(e){results+='PROXY ERROR: '+e.message+'\n';}
             alert(results);
           }}><i className="ti ti-stethoscope"/> Test połączenia KSeF</button>
