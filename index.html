@@ -211,6 +211,15 @@ const normalizeDate=s=>{
   if(!isNaN(d.getTime()))return d.toISOString().split('T')[0];
   return s;
 };
+// Classify a fuel-card "Rodzaj produktu" value into one of three buckets, used to
+// split fueling imports into separate Paliwo / AdBlue / Inne views and totals.
+const classifyProduct=fuelType=>{
+  const t=String(fuelType||'').trim().toLowerCase();
+  if(t==='olej napędowy'||t==='olej napedowy')return'paliwo';
+  if(t.startsWith('adblue'))return'adblue'; // covers "AdBlue (luzem)" and "AdBlue (puszki)"
+  return'inne';
+};
+const PRODUCT_CATEGORY_LABEL={paliwo:'Paliwo',adblue:'AdBlue',inne:'Inne'};
 const driveDirectUrl=url=>{
   if(!url)return null;
   const m=url.match(/\/file\/d\/([^/]+)/)||url.match(/[?&]id=([^&]+)/)||url.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
@@ -297,7 +306,7 @@ const SB_TABLE={
   tm_insurance:'insurance',tm_orders:'orders',tm_invoices:'invoices',
   tm_trips:'trips',tm_fines:'fines',tm_contractors:'contractors',
   tm_costs:'costs',tm_payroll:'payroll',tm_todos:'todos',
-  tm_company:'company',tm_settings:'settings',
+  tm_company:'company',tm_settings:'settings',tm_fuel_records:'fuel_records',
 };
 
 // Singleton tables (store single JSON object, not array)
@@ -2072,6 +2081,309 @@ const Repairs=({db,initialFilter,onFilterApplied})=>{
         <div style={{display:'flex',flexWrap:'wrap',gap:5}}>{repairTypes.map(t=><div key={t} style={{display:'flex',alignItems:'center',gap:3,background:'#f5f4f0',borderRadius:20,padding:'2px 10px 2px 11px',fontSize:11}}><span>{t}</span><button style={{background:'none',border:'none',cursor:'pointer',color:'#888',fontSize:13,lineHeight:1,padding:'0 1px'}} onClick={()=>remRT(t)}>×</button></div>)}</div>
       </div>
       <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:12,position:'sticky',bottom:0,background:'#fff',paddingTop:10,paddingBottom:6,borderTop:'0.5px solid rgba(0,0,0,0.08)'}}><button style={C.btn} onClick={()=>setModal(false)}>Anuluj</button><button style={C.btnP} onClick={save}>Zapisz</button></div>
+    </Modal>}
+  </div>);
+};
+
+// FUEL — imports fueling CSVs, auto-matches vehicle by registration number and
+// trip by date range, lets you monitor/control driver fuel consumption company-wide.
+const Fuel=({db})=>{
+  const [records,setRecords]=db.fuel_records;
+  const [vehicles]=db.vehicles;const [trips]=db.trips;
+  const [filterVeh,setFilterVeh]=useState('');
+  const [filterMonth,setFilterMonth]=useState('');
+  const [filterCat,setFilterCat]=useState('');
+  const [filterDupOnly,setFilterDupOnly]=useState(false);
+  const [modal,setModal]=useState(false);
+  const [form,setForm]=useState({});
+  const [importReport,setImportReport]=useState(null);
+  const [importing,setImporting]=useState(false);
+
+  // Find vehicle by registration — tolerant of spaces/case differences common in CSV exports
+  const normReg=s=>String(s||'').toUpperCase().replace(/\s/g,'');
+  const matchVehicle=reg=>vehicles.find(v=>normReg(v.registration)===normReg(reg));
+
+  // Find the trip covering this vehicle+date — used to auto-link a fuel record to
+  // the correct wyjazd (and therefore the driver who was on it at the time)
+  const matchTrip=(vehicleReg,date)=>{
+    if(!vehicleReg||!date)return null;
+    return trips.find(t=>t.vehicle_reg===vehicleReg&&t.start_date&&t.start_date<=date&&(!t.end_date||t.end_date>=date))||null;
+  };
+
+  const enrich=r=>{
+    const trip=matchTrip(r.vehicle_reg,r.date);
+    return{...r,trip_id:trip?trip.id:null,driver_name:trip?trip.driver_name:(r.driver_name||null),category:classifyProduct(r.fuel_type)};
+  };
+
+  const save=()=>{
+    const item=enrich(form);
+    if(form.id)setRecords(p=>p.map(x=>x.id===form.id?{...x,...item}:x));
+    else setRecords(p=>[...p,{...item,id:gid(),created_at:today()}]);
+    setModal(false);
+  };
+
+  // CSV import — mapuje dokładnie kolumny z eksportu karty paliwowej użytkownika,
+  // z fallbackiem na kilka alternatywnych nazw na wypadek innego formatu pliku.
+  const importCSV=e=>{
+    const file=e.target.files[0];if(!file)return;
+    setImporting(true);
+    const rd=new FileReader();
+    rd.onload=ev=>{
+      const {records:rows}=parseCSV(ev.target.result);
+      const REG_KEYS=['Nr rejestracyjny pojazdu','Nr rejestracyjny','Numer rejestracyjny','Rejestracja','vehicle_reg'];
+      const DATE_KEYS=['Czas transakcji','Data transakcji','Data','Date','date'];
+      const COST_GROUP_KEYS=['Grupa kosztowa','cost_group'];
+      const FUEL_TYPE_KEYS=['Rodzaj produktu','Rodzaj towaru','Rodzaj paliwa','fuel_type'];
+      const LITERS_KEYS=['Sprzedaż','Sprzedaz','Ilość','Ilosc','liters'];
+      const UNIT_KEYS=['Jednostka','unit'];
+      const PRICE_KEYS=['Cena jednostkowa','Cena/l','price_per_liter'];
+      const TOTAL_NET_KEYS=['Wartość całkowita netto','Wartosc calkowita netto','total_net'];
+      const TOTAL_GROSS_KEYS=['Wartość całkowita brutto','Wartosc calkowita brutto','total_gross'];
+      const TOTAL_INVOICE_CCY_KEYS=['Łączna wartość brutto (waluta faktury)','Laczna wartosc brutto (waluta faktury)','total_invoice_currency'];
+      const VAT_KEYS=['Podatek VAT','VAT','vat'];
+      const DISCOUNT_KEYS=['Rabat netto','discount_net'];
+      const SERVICE_FEE_KEYS=['Opłata serwisowa netto','Oplata serwisowa netto','service_fee_net'];
+      const COUNTRY_KEYS=['Kraj świadczenia usług','Kraj swiadczenia uslug','Kraj','country'];
+      const POSTAL_KEYS=['Kod pocztowy','postal_code'];
+      const CITY_KEYS=['Miejscowość','Miejscowosc','city'];
+      const STATION_NO_KEYS=['Numer stacji','station_number'];
+      const STATION_KEYS=['Nazwa stacji','Stacja','station'];
+      const CARD_KEYS=['Nr karty','Karta','card_number'];
+      const pick=(row,keys)=>{for(const k of keys)if(row[k]!==undefined&&row[k]!=='')return row[k];return '';};
+
+      let matched=0,unmatchedVeh=0,unmatchedTrip=0;
+      const imported=rows.map(row=>{
+        const regRaw=pick(row,REG_KEYS);
+        const veh=matchVehicle(regRaw);
+        const date=normalizeDate((pick(row,DATE_KEYS)||'').split(' ')[0]); // strip time part if present
+        const trip=veh?matchTrip(veh.registration,date):null;
+        if(veh)matched++;else unmatchedVeh++;
+        if(veh&&!trip)unmatchedTrip++;
+        const totalGross=pick(row,TOTAL_GROSS_KEYS);
+        const fuelType=pick(row,FUEL_TYPE_KEYS);
+        return{
+          id:gid(),
+          vehicle_reg:veh?veh.registration:regRaw,
+          vehicle_matched:!!veh,
+          date,
+          cost_group:pick(row,COST_GROUP_KEYS),
+          fuel_type:fuelType,
+          category:classifyProduct(fuelType),
+          liters:pick(row,LITERS_KEYS),
+          unit:pick(row,UNIT_KEYS)||'L',
+          price_per_liter:pick(row,PRICE_KEYS),
+          total_net:pick(row,TOTAL_NET_KEYS),
+          total_gross:totalGross,
+          total_cost:totalGross, // primary cost figure used for sums/reporting
+          total_invoice_currency:pick(row,TOTAL_INVOICE_CCY_KEYS),
+          vat:pick(row,VAT_KEYS),
+          discount_net:pick(row,DISCOUNT_KEYS),
+          service_fee_net:pick(row,SERVICE_FEE_KEYS),
+          country:pick(row,COUNTRY_KEYS),
+          postal_code:pick(row,POSTAL_KEYS),
+          city:pick(row,CITY_KEYS),
+          station_number:pick(row,STATION_NO_KEYS),
+          station:pick(row,STATION_KEYS),
+          card_number:pick(row,CARD_KEYS),
+          currency:'PLN',
+          trip_id:trip?trip.id:null,
+          driver_name:trip?trip.driver_name:null,
+          created_at:today(),
+        };
+      }).filter(r=>r.date||r.liters||r.vehicle_reg);
+
+      // Duplicate detection: same date + vehicle + amount + liters as an existing
+      // record (or another row within this same import) is flagged, not blocked —
+      // the user decides on the table (yellow rows) whether to keep or delete them.
+      const dupKey=r=>`${r.date}|${r.vehicle_reg}|${(parseFloat(r.total_gross||r.total_cost)||0).toFixed(2)}|${(parseFloat(r.liters)||0).toFixed(2)}`;
+      const existingKeys=new Set(records.map(dupKey));
+      const seenInBatch=new Set();
+      let duplicates=0;
+      imported.forEach(r=>{
+        const k=dupKey(r);
+        if(existingKeys.has(k)||seenInBatch.has(k)){r.is_duplicate=true;duplicates++;}
+        seenInBatch.add(k);
+      });
+
+      setRecords(p=>[...p,...imported]);
+      setImportReport({total:imported.length,matched,unmatchedVeh,unmatchedTrip,duplicates});
+      setImporting(false);
+    };
+    rd.readAsText(file,'UTF-8');
+    e.target.value='';
+  };
+
+  const months=[...new Set(records.map(r=>(r.date||'').slice(0,7)).filter(Boolean))].sort().reverse();
+  const filtered=records.filter(r=>{
+    if(filterVeh&&r.vehicle_reg!==filterVeh)return false;
+    if(filterMonth&&!(r.date||'').startsWith(filterMonth))return false;
+    if(filterCat&&(r.category||classifyProduct(r.fuel_type))!==filterCat)return false;
+    if(filterDupOnly&&!r.is_duplicate)return false;
+    return true;
+  }).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+
+  const totalLiters=filtered.reduce((s,r)=>s+(parseFloat(r.liters)||0),0);
+  const totalCost=filtered.reduce((s,r)=>s+(parseFloat(r.total_gross||r.total_cost)||0),0);
+  const totalNet=filtered.reduce((s,r)=>s+(parseFloat(r.total_net)||0),0);
+  const totalVat=filtered.reduce((s,r)=>s+(parseFloat(r.vat)||0),0);
+  const avgPrice=totalLiters>0?totalCost/totalLiters:0;
+  const unmatchedCount=filtered.filter(r=>!r.vehicle_matched&&r.vehicle_reg).length;
+  const noTripCount=filtered.filter(r=>r.vehicle_matched!==false&&!r.trip_id).length;
+
+  const F=(k,l,t='text')=>(<div><label style={C.lbl}>{l}</label><input style={C.inp} type={t} step={t==='number'?'0.01':undefined} value={form[k]||''} onChange={e=>setForm(p=>({...p,[k]:e.target.value}))}/></div>);
+
+  return(<div>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14,flexWrap:'wrap',gap:8}}>
+      <h1 style={{fontSize:18,fontWeight:500,margin:0}}>Paliwo</h1>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        <label style={{...C.btn,cursor:importing?'default':'pointer',position:'relative',overflow:'hidden',opacity:importing?0.6:1}}>
+          {importing?<><i className="ti ti-loader-2" style={{animation:'spin 1s linear infinite'}}/> Importowanie...</>:<><i className="ti ti-upload"/> Importuj CSV</>}
+          <input type="file" accept=".csv,text/csv" onChange={importCSV} disabled={importing} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}}/>
+        </label>
+        <button style={C.btnP} onClick={()=>{setForm({date:today()});setModal(true);}}><i className="ti ti-plus"/> Dodaj ręcznie</button>
+      </div>
+    </div>
+
+    {importReport&&<div style={{...C.card,marginBottom:14,background:importReport.unmatchedVeh>0||importReport.duplicates>0?'#FAEEDA':'#EAF3DE',border:`0.5px solid ${importReport.unmatchedVeh>0||importReport.duplicates>0?'#EF9F27':'#9FCB6A'}`}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div style={{fontSize:12}}>
+          Zaimportowano <b>{importReport.total}</b> wierszy — dopasowano pojazd: <b>{importReport.matched}</b>
+          {importReport.unmatchedVeh>0&&<span style={{color:'#854F0B'}}> · nierozpoznany pojazd: <b>{importReport.unmatchedVeh}</b></span>}
+          {importReport.unmatchedTrip>0&&<span style={{color:'#854F0B'}}> · brak wyjazdu w tej dacie: <b>{importReport.unmatchedTrip}</b></span>}
+          {importReport.duplicates>0&&<span style={{color:'#854F0B'}}> · możliwe duplikaty: <b>{importReport.duplicates}</b> (oznaczone na żółto w tabeli — sprawdź i usuń jeśli to powtórki)</span>}
+        </div>
+        <button style={{...C.btn,padding:'2px 8px'}} onClick={()=>setImportReport(null)}><i className="ti ti-x"/></button>
+      </div>
+    </div>}
+
+    {/* Duplicate filter shortcut */}
+    {records.some(r=>r.is_duplicate)&&<div style={{marginBottom:10}}>
+      <button style={{...C.btn,background:filterDupOnly?'#EF9F27':'',color:filterDupOnly?'#fff':'',fontSize:11}} onClick={()=>setFilterDupOnly(p=>!p)}>
+        <i className="ti ti-alert-triangle"/> {filterDupOnly?'Pokaż wszystkie':'Pokaż tylko możliwe duplikaty'} ({records.filter(r=>r.is_duplicate).length})
+      </button>
+    </div>}
+
+    {/* Summary */}
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:10,marginBottom:14}}>
+      <div style={C.stat}><div style={{fontSize:10,color:'#888'}}>Litry razem</div><div style={{fontSize:18,fontWeight:600}}>{totalLiters.toFixed(1)} L</div></div>
+      <div style={C.stat}><div style={{fontSize:10,color:'#888'}}>Koszt razem</div><div style={{fontSize:18,fontWeight:600}}>{totalCost.toFixed(2)} zł</div></div>
+      <div style={C.stat}><div style={{fontSize:10,color:'#888'}}>Śr. cena/l</div><div style={{fontSize:18,fontWeight:600}}>{avgPrice.toFixed(2)} zł</div></div>
+      <div style={{...C.stat,background:unmatchedCount>0?'#FCEBEB':undefined}}><div style={{fontSize:10,color:'#888'}}>Nierozpoznany pojazd</div><div style={{fontSize:18,fontWeight:600,color:unmatchedCount>0?'#A32D2D':undefined}}>{unmatchedCount}</div></div>
+      <div style={{...C.stat,background:noTripCount>0?'#FAEEDA':undefined}}><div style={{fontSize:10,color:'#888'}}>Bez przypisanego wyjazdu</div><div style={{fontSize:18,fontWeight:600,color:noTripCount>0?'#854F0B':undefined}}>{noTripCount}</div></div>
+    </div>
+
+    {/* Filters */}
+    <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+      <select style={{...C.inp,width:180}} value={filterVeh} onChange={e=>setFilterVeh(e.target.value)}>
+        <option value="">Wszystkie pojazdy</option>
+        {vehicles.map(v=><option key={v.id} value={v.registration}>{v.registration}</option>)}
+      </select>
+      <select style={{...C.inp,width:160}} value={filterMonth} onChange={e=>setFilterMonth(e.target.value)}>
+        <option value="">Wszystkie miesiące</option>
+        {months.map(m=><option key={m} value={m}>{m}</option>)}
+      </select>
+      <select style={{...C.inp,width:140}} value={filterCat} onChange={e=>setFilterCat(e.target.value)}>
+        <option value="">Wszystkie rodzaje</option>
+        <option value="paliwo">Paliwo</option>
+        <option value="adblue">AdBlue</option>
+        <option value="inne">Inne</option>
+      </select>
+      {(filterVeh||filterMonth||filterCat)&&<button style={C.btn} onClick={()=>{setFilterVeh('');setFilterMonth('');setFilterCat('');}}><i className="ti ti-x"/> Wyczyść filtry</button>}
+    </div>
+
+    {/* Table */}
+    <div style={C.card}><div style={{overflowX:'auto'}}>
+      <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+        <thead><tr>{['Data','Pojazd','Kierowca / Wyjazd','Grupa kosztowa','Rodzaj produktu','Kategoria','Sprzedaż','Jedn.','Cena jedn.','Wart. netto','Wart. brutto','Waluta faktury','VAT','Kraj','Miejscowość','Nr stacji','Nazwa stacji',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
+        <tbody>
+          {filtered.map(r=>(
+            <tr key={r.id} style={r.is_duplicate?{background:'#FFF6D8'}:undefined}>
+              <td style={C.td}>{r.date||'–'}</td>
+              <td style={C.td}>
+                <span style={{fontWeight:500}}>{r.vehicle_reg||'–'}</span>
+                {r.vehicle_matched===false&&<span style={{...bdg('red'),marginLeft:5,fontSize:9}}>nierozpoznany</span>}
+                {r.is_duplicate&&<span style={{...bdg('amber'),marginLeft:5,fontSize:9}}><i className="ti ti-alert-triangle" style={{fontSize:9}}/> duplikat?</span>}
+              </td>
+              <td style={C.td}>
+                {r.driver_name?<span>{r.driver_name}</span>:r.vehicle_matched!==false?<span style={{...bdg('amber'),fontSize:9}}>brak wyjazdu w tej dacie</span>:<span style={{color:'#ccc'}}>–</span>}
+              </td>
+              <td style={C.td}>{r.cost_group||'–'}</td>
+              <td style={C.td}>{r.fuel_type||'–'}</td>
+              <td style={C.td}>{(()=>{const cat=r.category||classifyProduct(r.fuel_type);return<span style={bdg(cat==='paliwo'?'blue':cat==='adblue'?'green':'gray')}>{PRODUCT_CATEGORY_LABEL[cat]}</span>;})()}</td>
+              <td style={C.td}>{r.liters?parseFloat(r.liters).toFixed(2):'–'}</td>
+              <td style={C.td}>{r.unit||'–'}</td>
+              <td style={C.td}>{r.price_per_liter?parseFloat(r.price_per_liter).toFixed(3):'–'}</td>
+              <td style={C.td}>{r.total_net?parseFloat(r.total_net).toFixed(2):'–'}</td>
+              <td style={{...C.td,fontWeight:500}}>{r.total_gross?parseFloat(r.total_gross).toFixed(2):'–'}</td>
+              <td style={C.td}>{r.total_invoice_currency?parseFloat(r.total_invoice_currency).toFixed(2):'–'}</td>
+              <td style={C.td}>{r.vat?parseFloat(r.vat).toFixed(2):'–'}</td>
+              <td style={C.td}>{r.country||'–'}</td>
+              <td style={C.td}>{r.city||'–'}</td>
+              <td style={C.td}>{r.station_number||'–'}</td>
+              <td style={C.td}>{r.station||'–'}</td>
+              <td style={C.td}>
+                {r.is_duplicate&&<button style={{...C.btn,padding:'2px 5px',color:'#3B6D11'}} title="To nie jest duplikat — zachowaj" onClick={()=>setRecords(p=>p.map(x=>x.id===r.id?{...x,is_duplicate:false}:x))}><i className="ti ti-check"/></button>}
+                <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>{setForm(r);setModal(true);}}><i className="ti ti-edit"/></button>
+                <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setRecords(p=>p.filter(x=>x.id!==r.id))}><i className="ti ti-trash"/></button>
+              </td>
+            </tr>
+          ))}
+          {filtered.length>0&&<tr style={{background:'#f5f4f0',fontWeight:600,borderTop:'1.5px solid rgba(0,0,0,0.12)'}}>
+            <td style={C.td}>SUMA</td>
+            <td style={C.td}></td>
+            <td style={C.td}></td>
+            <td style={C.td}></td>
+            <td style={C.td}></td>
+            <td style={C.td}></td>
+            <td style={C.td}>{totalLiters.toFixed(2)}</td>
+            <td style={C.td}></td>
+            <td style={C.td}>śr. {avgPrice.toFixed(3)}</td>
+            <td style={C.td}>{totalNet.toFixed(2)}</td>
+            <td style={{...C.td,color:'#185FA5'}}>{totalCost.toFixed(2)}</td>
+            <td style={C.td}></td>
+            <td style={C.td}>{totalVat.toFixed(2)}</td>
+            <td style={C.td}></td>
+            <td style={C.td}></td>
+            <td style={C.td}></td>
+            <td style={C.td}></td>
+            <td style={C.td}></td>
+          </tr>}
+        </tbody>
+      </table>
+      {filtered.length===0&&<div style={{textAlign:'center',padding:30,color:'#888',fontSize:11}}>Brak tankowań — zaimportuj CSV lub dodaj wpis ręcznie.</div>}
+    </div></div>
+
+    {modal&&<Modal title={form.id?'Edytuj tankowanie':'Dodaj tankowanie'} onClose={()=>setModal(false)} wide>
+      <div style={C.g2}>
+        <div><label style={C.lbl}>Nr rejestracyjny pojazdu</label><select style={C.inp} value={form.vehicle_reg||''} onChange={e=>setForm(p=>({...p,vehicle_reg:e.target.value}))}><option value="">Wybierz...</option>{vehicles.map(v=><option key={v.id}>{v.registration}</option>)}</select></div>
+        {F('date','Czas transakcji','date')}
+        {F('cost_group','Grupa kosztowa')}
+        {F('fuel_type','Rodzaj produktu')}
+        {F('liters','Sprzedaż','number')}
+        <div><label style={C.lbl}>Jednostka</label><select style={C.inp} value={form.unit||'L'} onChange={e=>setForm(p=>({...p,unit:e.target.value}))}><option value="L">L</option><option value="szt.">szt.</option><option value="kg">kg</option></select></div>
+        {F('price_per_liter','Cena jednostkowa','number')}
+        {F('total_net','Wartość całkowita netto','number')}
+        {F('total_gross','Wartość całkowita brutto','number')}
+        {F('total_invoice_currency','Łączna wartość brutto (waluta faktury)','number')}
+        {F('vat','Podatek VAT','number')}
+        {F('discount_net','Rabat netto','number')}
+        {F('service_fee_net','Opłata serwisowa netto','number')}
+        {F('country','Kraj świadczenia usług')}
+        {F('postal_code','Kod pocztowy')}
+        {F('city','Miejscowość')}
+        {F('station_number','Numer stacji')}
+        {F('station','Nazwa stacji')}
+        {F('card_number','Nr karty paliwowej')}
+      </div>
+      {form.vehicle_reg&&form.date&&(()=>{const trip=matchTrip(form.vehicle_reg,normalizeDate(form.date)||form.date);return(
+        <div style={{marginTop:10,padding:'8px 10px',borderRadius:8,background:trip?'#EAF3DE':'#FAEEDA',fontSize:11}}>
+          {trip?<>Dopasowany wyjazd: <b>{trip.driver_name}</b> ({trip.start_date} → {trip.end_date||'w trakcie'})</>:'Brak wyjazdu tego pojazdu obejmującego tę datę — kierowca nie zostanie przypisany automatycznie.'}
+        </div>
+      );})()}
+      <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:14}}>
+        <button style={C.btn} onClick={()=>setModal(false)}>Anuluj</button>
+        <button style={C.btnP} onClick={save}>Zapisz</button>
+      </div>
     </Modal>}
   </div>);
 };
@@ -4280,7 +4592,7 @@ const TachoScreen=({entries,setEntries,trip,onClose,onSave})=>{
   </div>);
 };
 const Trips=({db})=>{
-  const [trips,setTrips]=db.trips;const [drivers]=db.drivers;const [vehicles]=db.vehicles;const [fines]=db.fines;
+  const [trips,setTrips]=db.trips;const [drivers]=db.drivers;const [vehicles]=db.vehicles;const [fines]=db.fines;const [fuelRecords,setFuelRecords]=db.fuel_records;
   const [modal,setModal]=useState(false);const [editTab,setEditTab]=useState('finanse');const [detail,setDetail]=useState(null);const [detailTab,setDetailTab]=useState('finanse');
   const [form,setForm]=useState({});const [equipItems,setEquipItems]=useState([]);const [checkBefore,setCheckBefore]=useState({});const [checkAfter,setCheckAfter]=useState({});
   const [newEL,setNewEL]=useState('');const [transfers,setTransfers]=useState([]);const [fuels,setFuels]=useState([]);const [fuelModal,setFuelModal]=useState(false);const [fuelForm,setFuelForm]=useState({});const [fsT,setFsT]=useState('wszystkie');
@@ -4303,12 +4615,13 @@ const Trips=({db})=>{
     });
   };
   const remPhoto=id=>setPhotos(p=>p.filter(ph=>ph.id!==id));
-  const emptyFuel=()=>({id:null,date:today(),station:'',country:'PL',fuel_type:'ON',mileage:'',liters:'',price_net:'',price_gross:'',total_net:'',total_gross:'',currency:'PLN'});
+  const emptyFuel=()=>({id:null,date:today(),station:'',country:'PL',fuel_type:'Olej napędowy',mileage:'',liters:'',price_net:'',price_gross:'',total_net:'',total_gross:'',currency:'PLN'});
   const saveFuel=()=>{if(fuelForm.id)setFuels(p=>p.map(f=>f.id===fuelForm.id?{...fuelForm}:f));else setFuels(p=>[...p,{...fuelForm,id:gid()}]);setFuelModal(false)};
   const FF=(k,l,t='text')=>(<div><label style={C.lbl}>{l}</label><input style={C.inp} type={t} step={t==='number'?'0.001':undefined} value={fuelForm[k]||''} onChange={e=>{const v=e.target.value;setFuelForm(p=>{const n={...p,[k]:v};const l2=parseFloat(n.liters)||0;if((k==='liters'||k==='price_net')&&l2&&(parseFloat(n.price_net)||0))n.total_net=(l2*(parseFloat(n.price_net)||0)).toFixed(2);if((k==='liters'||k==='price_gross')&&l2&&(parseFloat(n.price_gross)||0))n.total_gross=(l2*(parseFloat(n.price_gross)||0)).toFixed(2);return n;});}}/></div>);
   const [tachoEntries,setTachoEntries]=useState([]);
   const [tachoOpen,setTachoOpen]=useState(false);
   const [fuelOpen,setFuelOpen]=useState(false);
+  const [editImportedFuel,setEditImportedFuel]=useState(null);
   const save=()=>{const item={...form,equipItems,checkBefore,checkAfter,transfers,fuels,photos,tachoEntries,status:form.status||'zaplanowany'};if(form.id)setTrips(p=>p.map(x=>x.id===form.id?{...x,...item}:x));else setTrips(p=>[...p,{...item,id:gid(),created_at:today()}]);setModal(false)};
   const addT=()=>setTransfers(p=>[...p,{id:gid(),date:today(),type:'zaliczka',amount:'',currency:'PLN',description:''}]);
   const upT=(id,k,v)=>setTransfers(p=>p.map(t=>t.id===id?{...t,[k]:v}:t));const remT=id=>setTransfers(p=>p.filter(t=>t.id!==id));
@@ -4419,7 +4732,7 @@ const Trips=({db})=>{
           <div style={C.secT}>Tankowania</div>
           <div style={{display:'flex',gap:5}}>
             <button style={{...C.btn,fontSize:10,padding:'3px 7px'}} onClick={()=>setFuelOpen(true)}><i className="ti ti-arrows-maximize"/> Pełny ekran</button>
-            <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden',fontSize:10,padding:'3px 7px'}}><i className="ti ti-upload"/> CSV<input type="file" accept=".csv,text/csv" onChange={e=>{
+            <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden',fontSize:10,padding:'3px 7px'}}><i className="ti ti-upload"/> CSV (ręczne)<input type="file" accept=".csv,text/csv" onChange={e=>{
               const file=e.target.files[0];if(!file)return;
               const rd=new FileReader();
               rd.onload=ev=>{
@@ -4450,18 +4763,95 @@ const Trips=({db})=>{
               const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});
               const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`paliwo_${form.vehicle_reg||'wyjazd'}_${form.start_date||today()}.csv`;a.click();
             }}><i className="ti ti-download"/> CSV</button>
-            <button style={C.btn} onClick={()=>{setFuelForm(emptyFuel());setFuelModal(true)}}><i className="ti ti-plus"/> Dodaj</button>
+            <button style={C.btn} onClick={()=>{setFuelForm(emptyFuel());setFuelModal(true)}}><i className="ti ti-plus"/> Dodaj ręcznie</button>
           </div>
         </div>
-        {fuels.length>0?fuels.sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(f=><div key={f.id} style={{background:'#f5f4f0',borderRadius:7,padding:'6px 10px',marginBottom:4,display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:6,fontSize:11}}>
-          <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-            <strong>{f.date}</strong><span style={{...bdg('blue'),fontSize:9}}>{f.country}</span><span style={{...bdg('gray'),fontSize:9}}>{f.fuel_type}</span>
-            <span>{f.station||'–'}</span>{f.mileage&&<span style={{color:'#888'}}>{f.mileage}km</span>}
-            {f.liters&&<span style={{fontWeight:500}}>{parseFloat(f.liters).toFixed(1)}L</span>}
-            {f.total_gross&&<span style={{fontWeight:500}}>{parseFloat(f.total_gross).toFixed(2)}{f.currency}</span>}
-          </div>
-          <div style={{display:'flex',gap:4}}><button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setFuelForm({...f});setFuelModal(true)}}><i className="ti ti-edit"/></button><button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setFuels(p=>p.filter(x=>x.id!==f.id))}><i className="ti ti-trash"/></button></div>
-        </div>):<div style={{fontSize:11,color:'#888'}}>Brak tankowań.</div>}
+        {/* Tankowania — scalone: import z modułu Paliwo + wpisy ręczne, rozdzielone na Paliwo / AdBlue / Inne */}
+        {(fuelRecords.filter(r=>r.trip_id===form.id).length>0||fuels.length>0)&&(()=>{
+          const importedRows=(form.id?fuelRecords.filter(r=>r.trip_id===form.id):[]).map(r=>({...r,_manual:false}));
+          const manualRows=fuels.map(f=>({
+            id:f.id,date:f.date,vehicle_reg:form.vehicle_reg,driver_name:form.driver_name,
+            cost_group:null,fuel_type:f.fuel_type,category:classifyProduct(f.fuel_type),
+            liters:f.liters,unit:'L',price_per_liter:f.price_per_liter||f.price_gross||f.price_net,
+            total_net:f.total_net,total_gross:f.total_gross||f.total_cost,total_invoice_currency:null,
+            vat:null,country:f.country,city:null,station_number:null,station:f.station,
+            _manual:true,_raw:f,
+          }));
+          const allRows=[...importedRows,...manualRows].sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+          const CatTable=({cat,label})=>{
+            const rows=allRows.filter(r=>(r.category||classifyProduct(r.fuel_type))===cat);
+            if(rows.length===0)return null;
+            const sumL=rows.reduce((s,r)=>s+(parseFloat(r.liters)||0),0);
+            const sumC=rows.reduce((s,r)=>s+(parseFloat(r.total_gross||r.total_cost)||0),0);
+            const sumN=rows.reduce((s,r)=>s+(parseFloat(r.total_net)||0),0);
+            const sumV=rows.reduce((s,r)=>s+(parseFloat(r.vat)||0),0);
+            const avgP=sumL>0?sumC/sumL:0;
+            return<div style={{marginBottom:14}}>
+              <div style={{...C.secT,display:'flex',alignItems:'center',gap:6,marginBottom:6}}><i className="ti ti-gas-station"/>{label} ({rows.length})</div>
+              <div style={{overflowX:'auto',background:'#fff',borderRadius:8,border:'0.5px solid rgba(0,0,0,0.08)'}}>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                  <thead><tr>{['Źródło','Data','Pojazd','Kierowca / Wyjazd','Grupa kosztowa','Rodzaj produktu','Sprzedaż','Jedn.','Cena jedn.','Wart. netto','Wart. brutto','Waluta faktury','VAT','Kraj','Miejscowość','Nr stacji','Nazwa stacji',''].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {rows.map(r=><tr key={r.id} style={r.is_duplicate?{background:'#FFF6D8'}:undefined}>
+                      <td style={C.td}>{r._manual?<span style={bdg('gray')}>wpis ręczny</span>:<span style={bdg('blue')}>import CSV</span>}</td>
+                      <td style={C.td}>{r.date||'–'}</td>
+                      <td style={C.td}>{r.vehicle_reg||'–'}</td>
+                      <td style={C.td}>{r.driver_name||'–'}</td>
+                      <td style={C.td}>{r.cost_group||'–'}</td>
+                      <td style={C.td}>{r.fuel_type||'–'}</td>
+                      <td style={C.td}>{r.liters?parseFloat(r.liters).toFixed(2):'–'}</td>
+                      <td style={C.td}>{r.unit||'–'}</td>
+                      <td style={C.td}>{r.price_per_liter?parseFloat(r.price_per_liter).toFixed(3):'–'}</td>
+                      <td style={C.td}>{r.total_net?parseFloat(r.total_net).toFixed(2):'–'}</td>
+                      <td style={{...C.td,fontWeight:500}}>{r.total_gross?parseFloat(r.total_gross).toFixed(2):(r.total_cost?parseFloat(r.total_cost).toFixed(2):'–')}</td>
+                      <td style={C.td}>{r.total_invoice_currency?parseFloat(r.total_invoice_currency).toFixed(2):'–'}</td>
+                      <td style={C.td}>{r.vat?parseFloat(r.vat).toFixed(2):'–'}</td>
+                      <td style={C.td}>{r.country||'–'}</td>
+                      <td style={C.td}>{r.city||'–'}</td>
+                      <td style={C.td}>{r.station_number||'–'}</td>
+                      <td style={C.td}>{r.station||'–'}</td>
+                      <td style={C.td}>
+                        {r._manual?<>
+                          <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setFuelForm({...r._raw});setFuelModal(true);}}><i className="ti ti-edit"/></button>
+                          <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setFuels(p=>p.filter(x=>x.id!==r.id))}><i className="ti ti-trash"/></button>
+                        </>:<>
+                            <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setEditImportedFuel({...r})}><i className="ti ti-edit"/></button>
+                            <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>{if(window.confirm('Usunąć ten wpis tankowania?'))setFuelRecords(p=>p.filter(x=>x.id!==r.id));}}><i className="ti ti-trash"/></button>
+                          </>}
+                      </td>
+                    </tr>)}
+                    <tr style={{background:'#f5f4f0',fontWeight:600,borderTop:'1.5px solid rgba(0,0,0,0.12)'}}>
+                      <td style={C.td}></td>
+                      <td style={C.td}>SUMA</td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}>{sumL.toFixed(2)}</td>
+                      <td style={C.td}></td>
+                      <td style={C.td}>śr. {avgP.toFixed(3)}</td>
+                      <td style={C.td}>{sumN.toFixed(2)}</td>
+                      <td style={{...C.td,color:'#185FA5'}}>{sumC.toFixed(2)}</td>
+                      <td style={C.td}></td>
+                      <td style={C.td}>{sumV.toFixed(2)}</td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>;
+          };
+          return<div>
+            <CatTable cat="paliwo" label="Paliwo (Olej napędowy)"/>
+            <CatTable cat="adblue" label="AdBlue"/>
+            <CatTable cat="inne" label="Inne"/>
+          </div>;
+        })()}
+        {fuelRecords.filter(r=>r.trip_id===form.id).length===0&&fuels.length===0&&<div style={{fontSize:11,color:'#888'}}>Brak tankowań.</div>}
       </div>}
       {editTab==='checklist'&&<div style={{marginTop:10}}>
         <div style={{display:'flex',gap:6,marginBottom:8}}><input style={{...C.inp,flex:1}} placeholder="Dodaj pozycję..." value={newEL} onChange={e=>setNewEL(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newEL.trim()){const id=gid();setEquipItems(p=>[...p,{id,label:newEL.trim()}]);setNewEL('')}}}/><button style={C.btnP} onClick={()=>{if(!newEL.trim())return;const id=gid();setEquipItems(p=>[...p,{id,label:newEL.trim()}]);setNewEL('')}}><i className="ti ti-plus"/></button></div>
@@ -4512,13 +4902,47 @@ const Trips=({db})=>{
     {fuelModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.45)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:21000}} onClick={()=>setFuelModal(false)}>
       <div style={{background:'#fff',borderRadius:12,padding:'18px 20px',width:500,maxHeight:'90vh',overflowY:'auto',boxSizing:'border-box'}} onClick={e=>e.stopPropagation()}>
         <div style={{display:'flex',justifyContent:'space-between',marginBottom:10}}><div style={{fontSize:13,fontWeight:500}}>Tankowanie</div><button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setFuelModal(false)}><i className="ti ti-x"/></button></div>
-        <div style={C.g2}>{FF('date','Data','date')}<div><label style={C.lbl}>Kraj</label><select style={C.inp} value={fuelForm.country||'PL'} onChange={e=>setFuelForm(p=>({...p,country:e.target.value}))}>{['PL','DE','NL','BE','FR','IT','ES','LU'].map(c=><option key={c}>{c}</option>)}</select></div>{FF('station','Stacja')}<div><label style={C.lbl}>Paliwo</label><select style={C.inp} value={fuelForm.fuel_type||'ON'} onChange={e=>setFuelForm(p=>({...p,fuel_type:e.target.value}))}>{['ON','PB95','PB98','LPG','AdBlue'].map(t=><option key={t}>{t}</option>)}</select></div>{FF('mileage','Przebieg (km)','number')}{FF('liters','Litry','number')}</div>
+        <div style={C.g2}>{FF('date','Data','date')}<div><label style={C.lbl}>Kraj</label><select style={C.inp} value={fuelForm.country||'PL'} onChange={e=>setFuelForm(p=>({...p,country:e.target.value}))}>{['PL','DE','NL','BE','FR','IT','ES','LU'].map(c=><option key={c}>{c}</option>)}</select></div>{FF('station','Stacja')}<div><label style={C.lbl}>Rodzaj produktu</label><select style={C.inp} value={fuelForm.fuel_type||'Olej napędowy'} onChange={e=>setFuelForm(p=>({...p,fuel_type:e.target.value}))}>{['Olej napędowy','PB95','PB98','LPG','AdBlue (luzem)','AdBlue (puszki)'].map(t=><option key={t}>{t}</option>)}</select></div>{FF('mileage','Przebieg (km)','number')}{FF('liters','Litry','number')}</div>
         <div style={{marginTop:10,padding:'9px 11px',background:'#f5f4f0',borderRadius:7}}>
           <div style={{fontSize:9,fontWeight:500,color:'#888',textTransform:'uppercase',marginBottom:7}}>Ceny i kwoty</div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 60px',gap:7}}>{FF('price_net','C/L netto','number')}{FF('price_gross','C/L brutto','number')}<div><label style={C.lbl}>Waluta</label><select style={C.inp} value={fuelForm.currency||'PLN'} onChange={e=>setFuelForm(p=>({...p,currency:e.target.value}))}><option>PLN</option><option>EUR</option></select></div></div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,marginTop:7}}>{FF('total_net','Łącznie netto','number')}{FF('total_gross','Łącznie brutto','number')}</div>
         </div>
         <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:10}}><button style={C.btn} onClick={()=>setFuelModal(false)}>Anuluj</button><button style={C.btnP} onClick={saveFuel}>Zapisz</button></div>
+      </div>
+    </div>}
+    {editImportedFuel&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.45)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:21000}} onClick={()=>setEditImportedFuel(null)}>
+      <div style={{background:'#fff',borderRadius:12,padding:'18px 20px',width:560,maxHeight:'90vh',overflowY:'auto',boxSizing:'border-box'}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:'flex',justifyContent:'space-between',marginBottom:10}}><div style={{fontSize:13,fontWeight:500}}>Tankowanie (import z modułu Paliwo)</div><button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setEditImportedFuel(null)}><i className="ti ti-x"/></button></div>
+        {(()=>{
+          const FI=(k,l,t='text')=><div><label style={C.lbl}>{l}</label><input style={C.inp} type={t} step={t==='number'?'0.01':undefined} value={editImportedFuel[k]||''} onChange={e=>setEditImportedFuel(p=>({...p,[k]:e.target.value}))}/></div>;
+          return<div style={C.g2}>
+            <div><label style={C.lbl}>Nr rejestracyjny pojazdu</label><select style={C.inp} value={editImportedFuel.vehicle_reg||''} onChange={e=>setEditImportedFuel(p=>({...p,vehicle_reg:e.target.value}))}><option value="">Wybierz...</option>{vehicles.map(v=><option key={v.id}>{v.registration}</option>)}</select></div>
+            {FI('date','Czas transakcji','date')}
+            {FI('cost_group','Grupa kosztowa')}
+            {FI('fuel_type','Rodzaj produktu')}
+            {FI('liters','Sprzedaż','number')}
+            <div><label style={C.lbl}>Jednostka</label><select style={C.inp} value={editImportedFuel.unit||'L'} onChange={e=>setEditImportedFuel(p=>({...p,unit:e.target.value}))}><option value="L">L</option><option value="szt.">szt.</option><option value="kg">kg</option></select></div>
+            {FI('price_per_liter','Cena jednostkowa','number')}
+            {FI('total_net','Wartość całkowita netto','number')}
+            {FI('total_gross','Wartość całkowita brutto','number')}
+            {FI('total_invoice_currency','Łączna wartość brutto (waluta faktury)','number')}
+            {FI('vat','Podatek VAT','number')}
+            {FI('country','Kraj świadczenia usług')}
+            {FI('city','Miejscowość')}
+            {FI('station_number','Numer stacji')}
+            {FI('station','Nazwa stacji')}
+            {FI('card_number','Nr karty paliwowej')}
+          </div>;
+        })()}
+        <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:14}}>
+          <button style={C.btn} onClick={()=>setEditImportedFuel(null)}>Anuluj</button>
+          <button style={C.btnP} onClick={()=>{
+            const upd={...editImportedFuel,category:classifyProduct(editImportedFuel.fuel_type)};
+            setFuelRecords(p=>p.map(x=>x.id===upd.id?upd:x));
+            setEditImportedFuel(null);
+          }}>Zapisz</button>
+        </div>
       </div>
     </div>}
     {detail&&<Modal title={`Szczegóły: ${detail.driver_name}`} onClose={()=>setDetail(null)} wide>
@@ -4661,7 +5085,7 @@ const Trips=({db})=>{
         <button style={{...C.btnP,background:'#3B6D11',border:'none',padding:'6px 14px'}} onClick={()=>{save();setFuelOpen(false);}}><i className="ti ti-device-floppy"/> Zapisz</button>
       </div>
       <div style={{flex:1,overflow:'auto',padding:18}}>
-        {/* Stats */}
+        {/* Stats (obejmuje tylko wpisy ręczne — statystyki zbiorcze z importu widoczne w module Paliwo) */}
         {fuels.length>0&&(()=>{
           const total=fuels.reduce((s,f)=>s+(parseFloat(f.liters)||0),0);
           const cost=fuels.reduce((s,f)=>s+(parseFloat(f.total_gross)||parseFloat(f.total_net)||0),0);
@@ -4677,38 +5101,97 @@ const Trips=({db})=>{
         })()}
         {/* Add button */}
         <div style={{display:'flex',gap:8,marginBottom:14,flexWrap:'wrap'}}>
-          <button style={C.btnP} onClick={()=>{setFuelForm(emptyFuel());setFuelModal(true);}}><i className="ti ti-plus"/> Dodaj tankowanie</button>
-          <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden'}}><i className="ti ti-upload"/> Importuj CSV<input type="file" accept=".csv" onChange={e=>{const file=e.target.files[0];if(!file)return;const rd=new FileReader();rd.onload=ev=>{const{records}=parseCSV(ev.target.result);const imported=records.map(r=>({id:gid(),date:normalizeDate(r['Data']||r['date']||''),liters:r['Litry']||r['liters']||'',price_per_liter:r['Cena/l']||'',total_cost:r['Kwota']||r['total_cost']||'',currency:r['Waluta']||'PLN',station:r['Stacja']||r['station']||'',mileage:r['Przebieg']||r['mileage']||'',fuel_type:r['Paliwo']||r['fuel_type']||'',country:r['Kraj']||r['country']||'',notes:r['Uwagi']||'',full_tank:false})).filter(r=>r.date||r.liters);setFuels(p=>[...p,...imported]);};rd.readAsText(file,'UTF-8');e.target.value='';}} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}}/></label>
+          <button style={C.btnP} onClick={()=>{setFuelForm(emptyFuel());setFuelModal(true);}}><i className="ti ti-plus"/> Dodaj tankowanie ręcznie</button>
+          <label style={{...C.btn,cursor:'pointer',position:'relative',overflow:'hidden'}}><i className="ti ti-upload"/> Importuj CSV (ręczne)<input type="file" accept=".csv" onChange={e=>{const file=e.target.files[0];if(!file)return;const rd=new FileReader();rd.onload=ev=>{const{records}=parseCSV(ev.target.result);const imported=records.map(r=>({id:gid(),date:normalizeDate(r['Data']||r['date']||''),liters:r['Litry']||r['liters']||'',price_per_liter:r['Cena/l']||'',total_cost:r['Kwota']||r['total_cost']||'',currency:r['Waluta']||'PLN',station:r['Stacja']||r['station']||'',mileage:r['Przebieg']||r['mileage']||'',fuel_type:r['Paliwo']||r['fuel_type']||'',country:r['Kraj']||r['country']||'',notes:r['Uwagi']||'',full_tank:false})).filter(r=>r.date||r.liters);setFuels(p=>[...p,...imported]);};rd.readAsText(file,'UTF-8');e.target.value='';}} style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}}/></label>
           <button style={C.btn} onClick={()=>{const rows=[['Data','Litry','Cena/l','Kwota','Waluta','Stacja','Przebieg','Paliwo','Kraj','Uwagi']];fuels.forEach(f=>rows.push([f.date,f.liters,f.price_per_liter||f.price_gross,f.total_gross||f.total_net,f.currency||'PLN',f.station,f.mileage,f.fuel_type,f.country,f.notes]));const csv=rows.map(r=>r.map(v=>`"${(v||'').toString().replace(/"/g,'""')}"`).join(',')).join('\n');const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`paliwo_${form.vehicle_reg||'wyjazd'}.csv`;a.click();}}><i className="ti ti-download"/> Eksportuj CSV</button>
         </div>
-        {/* Fuel table */}
-        <div style={{background:'#fff',borderRadius:12,overflow:'hidden',border:'0.5px solid rgba(0,0,0,0.08)'}}>
-          <table style={{width:'100%',borderCollapse:'collapse'}}>
-            <thead><tr style={{background:'#1a1a18',color:'#fff'}}>{['Data','Kraj','Stacja','Paliwo','Litry','Cena netto/l','Cena brutto/l','Łącznie netto','Łącznie brutto','Waluta','Przebieg','Uwagi',''].map(h=><th key={h} style={{padding:'8px 10px',textAlign:'left',fontSize:10,fontWeight:500,whiteSpace:'nowrap'}}>{h}</th>)}</tr></thead>
-            <tbody>{fuels.sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map((f,i)=>(
-              <tr key={f.id} style={{background:i%2===0?'#fff':'#fafaf9',borderBottom:'0.5px solid rgba(0,0,0,0.05)'}}>
-                <td style={C.td}>{f.date}</td>
-                <td style={C.td}>{f.country?<span style={bdg('blue')}>{f.country}</span>:'–'}</td>
-                <td style={C.td}>{f.station||'–'}</td>
-                <td style={C.td}>{f.fuel_type?<span style={bdg('amber')}>{f.fuel_type}</span>:'–'}</td>
-                <td style={{...C.td,fontWeight:600}}>{f.liters?`${parseFloat(f.liters).toFixed(2)} l`:'–'}</td>
-                <td style={C.td}>{f.price_net?`${parseFloat(f.price_net).toFixed(3)}`:'–'}</td>
-                <td style={C.td}>{f.price_gross?`${parseFloat(f.price_gross).toFixed(3)}`:'–'}</td>
-                <td style={C.td}>{f.total_net?`${parseFloat(f.total_net).toFixed(2)}`:'–'}</td>
-                <td style={{...C.td,fontWeight:600,color:'#185FA5'}}>{f.total_gross?`${parseFloat(f.total_gross).toFixed(2)} ${f.currency||'PLN'}`:'–'}</td>
-                <td style={C.td}>{f.currency||'PLN'}</td>
-                <td style={C.td}>{f.mileage?`${f.mileage} km`:'–'}</td>
-                <td style={{...C.td,maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.notes||''}</td>
-                <td style={C.td}>
-                  <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setFuelForm(f);setFuelModal(true);}}><i className="ti ti-edit"/></button>
-                  <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setFuels(p=>p.filter(x=>x.id!==f.id))}><i className="ti ti-trash"/></button>
-                </td>
-              </tr>
-            ))}
-            {fuels.length===0&&<tr><td colSpan={13} style={{textAlign:'center',padding:32,color:'#aaa',fontSize:11}}>Brak tankowań — kliknij "+ Dodaj tankowanie"</td></tr>}
-            </tbody>
-          </table>
-        </div>
+        {/* Tankowania — scalone: import z modułu Paliwo + wpisy ręczne, rozdzielone na Paliwo / AdBlue / Inne */}
+        {(fuelRecords.filter(r=>r.trip_id===form.id).length>0||fuels.length>0)?(()=>{
+          const importedRows=(form.id?fuelRecords.filter(r=>r.trip_id===form.id):[]).map(r=>({...r,_manual:false}));
+          const manualRows=fuels.map(f=>({
+            id:f.id,date:f.date,vehicle_reg:form.vehicle_reg,driver_name:form.driver_name,
+            cost_group:null,fuel_type:f.fuel_type,category:classifyProduct(f.fuel_type),
+            liters:f.liters,unit:'L',price_per_liter:f.price_per_liter||f.price_gross||f.price_net,
+            total_net:f.total_net,total_gross:f.total_gross||f.total_cost,total_invoice_currency:null,
+            vat:null,country:f.country,city:null,station_number:null,station:f.station,
+            _manual:true,_raw:f,
+          }));
+          const allRows=[...importedRows,...manualRows].sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+          const CatTable=({cat,label})=>{
+            const rows=allRows.filter(r=>(r.category||classifyProduct(r.fuel_type))===cat);
+            if(rows.length===0)return null;
+            const sumL=rows.reduce((s,r)=>s+(parseFloat(r.liters)||0),0);
+            const sumC=rows.reduce((s,r)=>s+(parseFloat(r.total_gross||r.total_cost)||0),0);
+            const sumN=rows.reduce((s,r)=>s+(parseFloat(r.total_net)||0),0);
+            const sumV=rows.reduce((s,r)=>s+(parseFloat(r.vat)||0),0);
+            const avgP=sumL>0?sumC/sumL:0;
+            return<div style={{marginBottom:20}}>
+              <div style={{fontSize:12,fontWeight:600,marginBottom:8,display:'flex',alignItems:'center',gap:6}}><i className="ti ti-gas-station"/>{label} ({rows.length})</div>
+              <div style={{background:'#fff',borderRadius:12,overflow:'auto',border:'0.5px solid rgba(0,0,0,0.08)'}}>
+                <table style={{width:'100%',borderCollapse:'collapse'}}>
+                  <thead><tr style={{background:'#185FA5',color:'#fff'}}>{['Źródło','Data','Pojazd','Kierowca / Wyjazd','Grupa kosztowa','Rodzaj produktu','Sprzedaż','Jedn.','Cena jedn.','Wart. netto','Wart. brutto','Waluta faktury','VAT','Kraj','Miejscowość','Nr stacji','Nazwa stacji',''].map(h=><th key={h} style={{padding:'8px 10px',textAlign:'left',fontSize:10,fontWeight:500,whiteSpace:'nowrap'}}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {rows.map((r,i)=>(
+                      <tr key={r.id} style={{background:r.is_duplicate?'#FFF6D8':(i%2===0?'#fff':'#f0f6fc'),borderBottom:'0.5px solid rgba(0,0,0,0.05)'}}>
+                        <td style={C.td}>{r._manual?<span style={bdg('gray')}>wpis ręczny</span>:<span style={bdg('blue')}>import CSV</span>}</td>
+                        <td style={C.td}>{r.date||'–'}</td>
+                        <td style={C.td}>{r.vehicle_reg||'–'}</td>
+                        <td style={C.td}>{r.driver_name||'–'}</td>
+                        <td style={C.td}>{r.cost_group||'–'}</td>
+                        <td style={C.td}>{r.fuel_type||'–'}</td>
+                        <td style={{...C.td,fontWeight:600}}>{r.liters?parseFloat(r.liters).toFixed(2):'–'}</td>
+                        <td style={C.td}>{r.unit||'–'}</td>
+                        <td style={C.td}>{r.price_per_liter?parseFloat(r.price_per_liter).toFixed(3):'–'}</td>
+                        <td style={C.td}>{r.total_net?parseFloat(r.total_net).toFixed(2):'–'}</td>
+                        <td style={{...C.td,fontWeight:600,color:'#185FA5'}}>{r.total_gross?parseFloat(r.total_gross).toFixed(2):(r.total_cost?parseFloat(r.total_cost).toFixed(2):'–')}</td>
+                        <td style={C.td}>{r.total_invoice_currency?parseFloat(r.total_invoice_currency).toFixed(2):'–'}</td>
+                        <td style={C.td}>{r.vat?parseFloat(r.vat).toFixed(2):'–'}</td>
+                        <td style={C.td}>{r.country||'–'}</td>
+                        <td style={C.td}>{r.city||'–'}</td>
+                        <td style={C.td}>{r.station_number||'–'}</td>
+                        <td style={C.td}>{r.station||'–'}</td>
+                        <td style={C.td}>
+                          {r._manual?<>
+                            <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>{setFuelForm({...r._raw});setFuelModal(true);}}><i className="ti ti-edit"/></button>
+                            <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>setFuels(p=>p.filter(x=>x.id!==r.id))}><i className="ti ti-trash"/></button>
+                          </>:<>
+                            <button style={{...C.btn,padding:'2px 5px'}} onClick={()=>setEditImportedFuel({...r})}><i className="ti ti-edit"/></button>
+                            <button style={{...C.btn,padding:'2px 5px',marginLeft:3}} onClick={()=>{if(window.confirm('Usunąć ten wpis tankowania?'))setFuelRecords(p=>p.filter(x=>x.id!==r.id));}}><i className="ti ti-trash"/></button>
+                          </>}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr style={{background:'#f5f4f0',fontWeight:600,borderTop:'1.5px solid rgba(0,0,0,0.12)'}}>
+                      <td style={C.td}></td>
+                      <td style={C.td}>SUMA</td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}>{sumL.toFixed(2)}</td>
+                      <td style={C.td}></td>
+                      <td style={C.td}>śr. {avgP.toFixed(3)}</td>
+                      <td style={C.td}>{sumN.toFixed(2)}</td>
+                      <td style={{...C.td,color:'#185FA5'}}>{sumC.toFixed(2)}</td>
+                      <td style={C.td}></td>
+                      <td style={C.td}>{sumV.toFixed(2)}</td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                      <td style={C.td}></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>;
+          };
+          return<div>
+            <CatTable cat="paliwo" label="Paliwo (Olej napędowy)"/>
+            <CatTable cat="adblue" label="AdBlue"/>
+            <CatTable cat="inne" label="Inne"/>
+          </div>;
+        })():<div style={{textAlign:'center',padding:32,color:'#aaa',fontSize:11}}>Brak tankowań — kliknij "+ Dodaj tankowanie ręcznie" lub zaimportuj w module Paliwo.</div>}
       </div>
     </div>}
   </div>);
@@ -5324,7 +5807,10 @@ CREATE TABLE orders (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, number text,
 CREATE TABLE invoices (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, number text, seller_name text, seller_nip text, buyer_name text, buyer_nip text, issue_date date, sale_date date, payment_days int, currency text, items jsonb, total_net numeric, total_vat numeric, total_gross numeric, eur_rate numeric, eur_rate_date text, status text, ksef_sent boolean, ksef_ref text);
 CREATE TABLE trips (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, driver_name text, vehicle_reg text, start_date date, end_date date, status text, daily_rate numeric, mileage_start int, mileage_end int, equipItems jsonb, checkBefore jsonb, checkAfter jsonb, transfers jsonb, fuels jsonb, vehicle_pickup_date date, vehicle_return_date date, vehicle_note text);
 CREATE TABLE fines (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, fine_number text, driver_name text, vehicle_reg text, offense_date date, date date, location text, country text, reason text, amount numeric, amount_currency text, points int, settled boolean, settled_date date);
-CREATE TABLE contractors (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, name text, nip text, address text, phone text, email text, bank_account text, is_default boolean);`}</pre>
+CREATE TABLE contractors (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, name text, nip text, address text, phone text, email text, bank_account text, is_default boolean);
+-- Nowe tabele (drivers/vehicles/... powyżej to stary format kolumnowy — poniższe tabele
+-- używają aktualnego formatu, wymaganego przez aplikację: id + jedna kolumna JSONB "data"):
+CREATE TABLE fuel_records (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, data jsonb, created_at timestamptz DEFAULT now());`}</pre>
     </div>
   </div>);
 };
@@ -5882,6 +6368,7 @@ const MODS=[
   {id:'kadry',label:'Kadry',short:'Kadry',icon:'ti-users-group',mobile:true},
   {id:'vehicles',label:'Pojazdy',short:'Pojazdy',icon:'ti-truck',mobile:true},
   {id:'repairs',label:'Naprawy',short:'Naprawy',icon:'ti-tool',mobile:true},
+  {id:'fuel',label:'Paliwo',short:'Paliwo',icon:'ti-gas-station',mobile:true},
   {id:'orders',label:'Zlecenia',short:'Zlecenia',icon:'ti-clipboard-list',mobile:true},
   {id:'invoices',label:'Faktury',short:'Faktury',icon:'ti-receipt',mobile:true},
   {id:'finanse',label:'Finanse',short:'Finanse',icon:'ti-wallet',mobile:true},
@@ -5985,7 +6472,7 @@ const LoginScreen=({onLogin})=>{
 const ALL_MODULES=[
   {id:'dashboard',label:'Panel główny'},{id:'company',label:'Dane firmy'},
   {id:'contractors',label:'Kontrahenci'},{id:'kadry',label:'Kadry'},
-  {id:'vehicles',label:'Pojazdy'},{id:'repairs',label:'Naprawy'},
+  {id:'vehicles',label:'Pojazdy'},{id:'repairs',label:'Naprawy'},{id:'fuel',label:'Paliwo'},
   {id:'orders',label:'Zlecenia'},{id:'invoices',label:'Faktury'},
   {id:'finanse',label:'Finanse'},{id:'trips',label:'Wyjazdy'},
   {id:'fines',label:'Mandaty'},{id:'settings',label:'Ustawienia'},
@@ -6189,6 +6676,7 @@ function App(){
     drivers:useStore('tm_drivers',[]),vehicles:useStore('tm_vehicles',[]),repairs:useStore('tm_repairs',[]),insurance:useStore('tm_insurance',[]),
     orders:useStore('tm_orders',[]),invoices:useStore('tm_invoices',[]),trips:useStore('tm_trips',[]),fines:useStore('tm_fines',[]),costs:useStore('tm_costs',[]),
     company:useStore('tm_company',{}),contractors:useStore('tm_contractors',[]),settings:useStore('tm_settings',{}),todos:useStore('tm_todos',[]),payroll:useStore('tm_payroll',[]),
+    fuel_records:useStore('tm_fuel_records',[]),
   };
 
   const profile=currentUser?.profile||{role:'admin',modules:MODS.map(m=>m.id)};
@@ -6293,6 +6781,7 @@ function App(){
         {active==='kadry'&&<Kadry db={effectiveDb}/>}
         {active==='vehicles'&&<Vehicles db={effectiveDb} onGoToRepairs={reg=>{setRepairFilter({vehicle:reg});setActive('repairs');}}/>}
         {active==='repairs'&&<Repairs db={effectiveDb} initialFilter={repairFilter} onFilterApplied={()=>setRepairFilter(null)}/>}
+        {active==='fuel'&&<Fuel db={effectiveDb}/>}
         {active==='orders'&&<Orders db={effectiveDb} onCreateInvoice={o=>{setPendingInvoice(o);setActive('invoices');}} onOpenInvoicePreview={id=>{setInvoicePreviewTarget(id);setActive('invoices');}} onEditInvoice={id=>{setInvoiceEditTarget(id);setActive('invoices');}}/>}
         {active==='invoices'&&<Invoices db={effectiveDb} pendingInvoice={pendingInvoice} onClearPending={()=>setPendingInvoice(null)} openPreviewId={invoicePreviewTarget} onPreviewOpened={()=>setInvoicePreviewTarget(null)} onInvoiceSavedFromOrder={()=>setActive('orders')} editId={invoiceEditTarget} onEditOpened={()=>setInvoiceEditTarget(null)}/>}
         {active==='finanse'&&<Finanse db={effectiveDb}/>}
